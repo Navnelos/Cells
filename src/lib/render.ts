@@ -43,11 +43,13 @@ export type Op =
   | { k: "rect"; x: number; y: number; w: number; h: number; fill: string }
   | { k: "curves"; c: Curve[]; fill?: string; stroke?: string; width?: number; alpha?: number }
   | { k: "poly"; p: Float64Array; fill?: string; alpha?: number }
+  | { k: "polys"; p: Float64Array[]; fill: string; stroke?: string; width?: number; alpha?: number }
   | { k: "lines"; s: Float64Array; stroke: string; width: number; alpha?: number }
   | { k: "discs"; d: Float64Array; fill?: string; stroke?: string; width?: number; alpha?: number }
   | { k: "radial"; x: number; y: number; r: number; color: string; alpha: number }
   | { k: "clipPoly"; p: Float64Array }
   | { k: "clipCurves"; c: Curve[] }
+  | { k: "clipRings"; r: Float64Array[] }
   | { k: "unclip" }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -92,34 +94,44 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   // ---- the shape -------------------------------------------------------------------------
   ops.push({ k: "clipPoly", p: g.outline })
   // junction webs: a dark, slightly tinted base under everything
-  ops.push({ k: "poly", p: g.outline, fill: mix(p.bg, p.strand, 0.1) })
+  ops.push({ k: "poly", p: g.outline, fill: mix(mix(p.bg, p.blue, 0.22), p.strand, 0.06) })
   if (p.glow > 0) ops.push({ k: "radial", x: g.hub[0], y: g.hub[1], r: 0.45, color: p.hub, alpha: 0.4 * p.glow })
 
-  // fan lines: fine lines converging on the walls
+  // junction webs: a soft lime haze of very fine lines converging on the walls
   for (const cell of g.cells) {
     if (!cell.fans.length) continue
-    const col = mix(p.strand, p.hub, Math.min(1, p.glow * cell.hub))
-    ops.push({ k: "curves", c: cell.fans, stroke: col, width: 0.6 * px, alpha: Math.min(0.95, 0.45 + 0.5 * p.glow * cell.hub) })
+    const t = Math.min(1, p.glow * cell.hub)
+    ops.push({ k: "curves", c: cell.fans, stroke: mix(p.strand, p.hub, t), width: 0.42 * px, alpha: Math.min(0.85, 0.22 + 0.4 * t) })
   }
 
-  // holes: dark
   const pores = g.cells.map((cl) => cl.pore).filter((x): x is Curve => !!x)
+  const emptyPores = g.cells.filter((cl) => cl.pore && !cl.filled).map((cl) => cl.pore!) as Curve[]
+  // all cells dark (inside the edge band)
+  ops.push({ k: "clipRings", r: g.inner })
   ops.push({ k: "curves", c: pores, fill: p.bg })
+  ops.push({ k: "unclip" })
 
-  // foam inside the holes
+  // foam: between cells, along the edge band, and in the cells that carry it
   const colors: Record<(typeof STYLES)[number], string> = { lime: p.lime, green: p.green, blue: p.blue, lace: p.lace }
-  ops.push({ k: "clipCurves", c: pores })
   for (const s of STYLES) {
-    if (s === "lace") continue
-    if (g.tiles[s].length) ops.push({ k: "discs", d: g.tiles[s], fill: colors[s] })
-    if (g.holesMid[s].length) ops.push({ k: "discs", d: g.holesMid[s], fill: mix(colors[s], p.bg, 0.55) })
-    if (g.holesDark[s].length) ops.push({ k: "discs", d: g.holesDark[s], fill: mix(colors[s], p.bg, 0.8) })
+    const base = s === "lace" && g.flat ? mix(p.green, p.bg, 0.55) : colors[s]
+    const tones = [mix(base, p.bg, 0.06), base, mix(base, "#ffffff", 0.18)]
+    g.tiles[s].forEach((polys, i) => {
+      if (polys.length) ops.push({ k: "polys", p: polys, fill: tones[i], alpha: s === "lace" && !g.flat ? 0.82 : 1 })
+    })
+    const holeCol = s === "lace" ? p.bg : mix(colors[s], p.bg, 0.74)
+    if (g.holes[s].length) ops.push({ k: "curves", c: g.holes[s], fill: holeCol })
+    if (g.holesMid[s].length) ops.push({ k: "curves", c: g.holesMid[s], fill: mix(colors[s], p.bg, 0.55) })
   }
-  if (g.tiles.lace.length) {
-    if (g.flat) ops.push({ k: "discs", d: g.tiles.lace, fill: mix(p.green, p.bg, 0.55) })
-    else ops.push({ k: "discs", d: g.tiles.lace, stroke: p.lace, width: 0.9 * px, alpha: 0.75 })
+
+  // empty cells cut back to dark, then lace fragments and faint hatching inside some of them
+  ops.push({ k: "clipRings", r: g.inner })
+  ops.push({ k: "curves", c: emptyPores, fill: p.bg })
+  ops.push({ k: "clipCurves", c: emptyPores })
+  if (g.overTiles.length) {
+    ops.push({ k: "polys", p: g.overTiles, fill: p.lace, alpha: 0.78 })
+    ops.push({ k: "curves", c: g.overHoles, fill: p.bg })
   }
-  // hatching in a few empty cells
   if (p.hatching) {
     for (const cell of g.cells) {
       const h = cell.hatch
@@ -127,21 +139,24 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
       const segs: number[] = []
       const ca = Math.cos(h.angle), sa = Math.sin(h.angle)
       for (let o = -h.r; o <= h.r; o += h.spacing) {
-        const half = Math.sqrt(Math.max(0, h.r * h.r - o * o))
+        const half = Math.sqrt(Math.max(0, h.r * h.r - o * o)) * 1.6
         const mx = h.cx - sa * o, my = h.cy + ca * o
         segs.push(mx - ca * half, my - sa * half, mx + ca * half, my + sa * half)
       }
-      ops.push({ k: "lines", s: Float64Array.from(segs), stroke: h.lace ? p.lace : p.strand, width: 0.6 * px, alpha: 0.28 })
+      ops.push({ k: "lines", s: Float64Array.from(segs), stroke: h.lace ? p.lace : p.strand, width: 0.5 * px, alpha: 0.16 })
     }
   }
   ops.push({ k: "unclip" })
 
-  // strands: the hole outlines, brighter and thicker towards the hub
+  // strands: a soft glow pass, then the thin line; brighter towards the hub (stop at the edge band)
   for (const cell of g.cells) {
     if (!cell.pore) continue
     const t = Math.min(1, p.glow * cell.hub)
-    ops.push({ k: "curves", c: [cell.pore], stroke: mix(p.strand, p.hub, t), width: p.strandWidth * (1 + 0.9 * t) * px })
+    const col = mix(p.strand, p.hub, t)
+    ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (3.2 + 2 * t) * px, alpha: 0.08 + 0.12 * t })
+    ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (1 + 0.7 * t) * px, alpha: 0.95 })
   }
+  ops.push({ k: "unclip" }) // inner
 
   if (p.dots) {
     if (g.dots.length) ops.push({ k: "discs", d: g.dots, fill: p.lace })
@@ -194,6 +209,12 @@ export function paintCanvas(ctx: CanvasRenderingContext2D, ops: Op[], frame: Fra
         ctx.beginPath(); polyPath(ctx, op.p)
         if (op.fill) { ctx.fillStyle = op.fill; ctx.fill() }
         break
+      case "polys":
+        ctx.beginPath()
+        for (const q of op.p) polyPath(ctx, q)
+        ctx.fillStyle = op.fill; ctx.fill()
+        if (op.stroke) { ctx.strokeStyle = op.stroke; ctx.lineWidth = op.width ?? 0.001; ctx.stroke() }
+        break
       case "curves":
         ctx.beginPath()
         for (const c of op.c) curvePath(ctx, c)
@@ -227,6 +248,9 @@ export function paintCanvas(ctx: CanvasRenderingContext2D, ops: Op[], frame: Fra
         break
       case "clipCurves":
         ctx.save(); ctx.beginPath(); for (const c of op.c) curvePath(ctx, c); ctx.clip("nonzero")
+        break
+      case "clipRings":
+        ctx.save(); ctx.beginPath(); for (const r of op.r) polyPath(ctx, r); ctx.clip("evenodd")
         break
       case "unclip":
         ctx.restore(); ctx.lineJoin = "round"; ctx.lineCap = "round"
@@ -268,6 +292,11 @@ export function toSVG(ops: Op[], frame: FrameBox): string {
       case "poly":
         out.push(`<path d="${polyD(op.p)}" fill="${op.fill ?? "none"}"${a(op.alpha)}/>`)
         break
+      case "polys": {
+        const d = op.p.map(polyD).join("")
+        if (d) out.push(`<path d="${d}" fill="${op.fill}"${op.stroke ? ` stroke="${op.stroke}" stroke-width="${n4(op.width ?? 0.001)}" stroke-linejoin="round"` : ""}${a(op.alpha)}/>`)
+        break
+      }
       case "curves": {
         const d = op.c.map(curveD).join("")
         if (!d) break
@@ -295,10 +324,11 @@ export function toSVG(ops: Op[], frame: FrameBox): string {
         break
       }
       case "clipPoly":
+      case "clipRings":
       case "clipCurves": {
         const cid = `c${id++}`
-        const d = op.k === "clipPoly" ? polyD(op.p) : op.c.map(curveD).join("")
-        defs.push(`<clipPath id="${cid}"><path d="${d}"/></clipPath>`)
+        const d = op.k === "clipPoly" ? polyD(op.p) : op.k === "clipRings" ? op.r.map(polyD).join("") : op.c.map(curveD).join("")
+        defs.push(`<clipPath id="${cid}"><path d="${d}"${op.k === "clipRings" ? ' clip-rule="evenodd"' : ""}/></clipPath>`)
         out.push(`<g clip-path="url(#${cid})">`)
         open++
         break

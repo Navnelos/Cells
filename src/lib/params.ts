@@ -17,6 +17,7 @@ export interface Params {
   giants: number // how many giant bubbles
   giantSize: number // giant bubble size, relative to a normal cell
   variety: number // size variety among normal cells
+  spacing: number // share of cells that sit apart from their neighbours, with foam between
   // strands
   strandWidth: number // px at a 1000 px tall frame
   webs: number // size of the fanned junction webs (corner rounding)
@@ -65,28 +66,29 @@ export const DEFAULT_LOBES: Lobe[] = [
 export const DEFAULTS: Params = {
   lobes: DEFAULT_LOBES,
   seed: 202,
-  cells: 70,
-  giants: 7,
-  giantSize: 1.6,
+  cells: 52,
+  giants: 6,
+  giantSize: 1.45,
   variety: 0.45,
-  strandWidth: 1.6,
-  webs: 0.8,
+  spacing: 0.45,
+  strandWidth: 1.4,
+  webs: 1.1,
   glow: 0.7,
   fill: "foam",
-  foamAmount: 0.3,
-  bubbleSize: 0.7,
-  holes: 0.85,
+  foamAmount: 0.15,
+  bubbleSize: 0.75,
+  holes: 0.5,
   wLime: 1,
   wGreen: 0.8,
   wBlue: 0.15,
-  wLace: 0.7,
-  bg: "#01142b",
-  strand: "#d4e62c",
-  hub: "#fff200",
-  lime: "#cfe02a",
-  green: "#8db43a",
-  blue: "#2f58c4",
-  lace: "#e9eef7",
+  wLace: 1,
+  bg: "#081528",
+  strand: "#d9e43a",
+  hub: "#f4ef1c",
+  lime: "#cde03b",
+  green: "#94bf3a",
+  blue: "#1d4cc1",
+  lace: "#e8eef8",
   grid: true,
   gridColor: "#5b6f93",
   ticks: true,
@@ -99,6 +101,6 @@ export const DEFAULTS: Params = {
 
 /** Parameters that change the geometry. Everything else is paint. */
 export const STRUCTURE_KEYS: (keyof Params)[] = [
-  "lobes", "seed", "cells", "giants", "giantSize", "variety", "webs", "fill", "foamAmount", "bubbleSize", "holes",
+  "lobes", "seed", "cells", "giants", "giantSize", "variety", "spacing", "webs", "fill", "foamAmount", "bubbleSize", "holes",
   "wLime", "wGreen", "wBlue", "wLace",
 ]

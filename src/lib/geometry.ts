@@ -47,10 +47,13 @@ export interface Cell {
 export interface Geometry {
   flat: boolean
   outline: Float64Array // polygon, densely sampled
+  inner: Float64Array[] // the inner edge of the thin edge band (rings, even-odd)
+  overTiles: Float64Array[] // lace fragments over empty cells
+  overHoles: Curve[]
   cells: Cell[]
-  tiles: Record<Style, Float64Array> // x y r
-  holesDark: Record<Style, Float64Array>
-  holesMid: Record<Style, Float64Array>
+  tiles: Record<Style, Float64Array[][]> // per style, three tones of polygons
+  holes: Record<Style, Curve[]>
+  holesMid: Record<Style, Curve[]>
   dots: Float64Array // x y r
   rings: Float64Array // x y r
   ticks: Float64Array // segments x0 y0 x1 y1
@@ -116,6 +119,20 @@ function sdConvex(px: number, py: number, xs: number[], ys: number[]): number {
     if (s * (ex * wy - ey * wx) < 0) inside = false
   }
   return inside ? -d : d
+}
+
+/** Drop nearly-straight vertices (turn < ~14°) so tiny edges don't become curve segments. */
+function simplifyPoly(q: LPoly): LPoly {
+  const m = q.x.length
+  if (m <= 4) return q
+  const o: LPoly = { x: [], y: [], lab: [] }
+  for (let k = 0; k < m; k++) {
+    const a = (k - 1 + m) % m, b = (k + 1) % m
+    const ux = q.x[k] - q.x[a], uy = q.y[k] - q.y[a], vx = q.x[b] - q.x[k], vy = q.y[b] - q.y[k]
+    const cr = Math.abs(ux * vy - uy * vx) / ((Math.hypot(ux, uy) * Math.hypot(vx, vy)) || 1)
+    if (cr > 0.24 || m - (k - o.x.length) <= 4) { o.x.push(q.x[k]); o.y.push(q.y[k]); o.lab.push(q.lab[k]) }
+  }
+  return o.x.length >= 3 ? o : q
 }
 
 // ---- rounded, bowed polygon → cubic Bézier curve ---------------------------------------
@@ -249,7 +266,7 @@ export function buildGeometry(p: Params): Geometry {
     const [x, y, dep] = pick()
     const v = 0.65 * noise(x * 2.2, y * 2.2) + 0.6 * (rng() - 0.5)
     // cells get smaller towards the edge, so the outer foam reads as a ring
-    const edgeScale = 0.5 + 0.6 * Math.min(1, dep / (rn * 2.4))
+    const edgeScale = 0.85 + 0.15 * Math.min(1, dep / (rn * 2))
     const r = rn * Math.exp(p.variety * v) * 0.95 * edgeScale
     if (!fits(x, y, r, 0.9)) continue
     sx.push(x); sy.push(y); sr.push(r); giant.push(false)
@@ -326,29 +343,23 @@ export function buildGeometry(p: Params): Geometry {
   }
 
   const halfGap = 0.0012
-  const FANS = 7
+  const FANS = 12
   const filledFrac = Math.max(0, Math.min(1, p.foamAmount))
   const cellDepth = sx.map((x, i) => Math.max(0, -B(x, sy[i])) / (maxDepth || 1))
   // rank non-giant cells by closeness to the edge (plus noise) → filled
-  const order = sx.map((_, i) => i).filter((i) => !giant[i])
-    .sort((a, b) => (cellDepth[a] + 0.25 * noise(sx[a] * 3, sy[a] * 3)) - (cellDepth[b] + 0.25 * noise(sx[b] * 3, sy[b] * 3)))
+  // smaller cells and cells nearer the edge fill first; big cells stay as dark holes
+  const score = (i: number) => 0.8 * (sr[i] / rn) + 0.6 * cellDepth[i] + 0.25 * noise(sx[i] * 3, sy[i] * 3)
+  const order = sx.map((_, i) => i).filter((i) => !giant[i]).sort((a, b) => score(a) - score(b))
   const filled = new Array<boolean>(N).fill(false)
   // cells that reach the outline are always foam (the edge is never an empty hole)
-  // test along the walls too, not just the corners (walls can cross the outline at a notch)
-  const edge = base.map((q) => {
-    const m = q.x.length
-    for (let k = 0; k < m; k++) {
-      const j = (k + 1) % m
-      for (let t = 0; t < 1; t += 0.125) if (B(q.x[k] + (q.x[j] - q.x[k]) * t, q.y[k] + (q.y[j] - q.y[k]) * t) > -0.012) return true
-    }
-    return false
-  })
-  const inner = order.filter((i) => !edge[i])
-  for (let i = 0; i < N; i++) if (edge[i]) filled[i] = true
-  for (let k = 0; k < Math.round(inner.length * filledFrac); k++) filled[inner[k]] = true
+  for (let k = 0; k < Math.round(order.length * filledFrac); k++) filled[order[k]] = true
+  // a few empty cells carry fragments of white lace
+  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.3)
+  const shrinkOf = sx.map((_, i) => (!giant[i] && rng() < p.spacing * Math.max(0, 1.5 - 1.6 * cellDepth[i]) ? 0.12 + rng() * 0.3 : 0))
 
   const cells: Cell[] = []
   const sharp: LPoly[] = []
+  const poreQ: LPoly[] = []
   const hrng = mulberry32(p.seed * 7 + 3)
   let hatches = 0
   for (let i = 0; i < N; i++) {
@@ -364,9 +375,13 @@ export function buildGeometry(p: Params): Geometry {
       : 0
     const fillet = Math.max(0, p.webs) * inr * 1.25
     const bow = bowFor(i)
-    const pore = roundedCurve(q, bow, fillet)
+    // some cells shrink away from their neighbours, leaving room for foam around them
+    const shrink = shrinkOf[i] * inr
+    const pq = shrink > 0 ? insetPoly(i, halfGap + shrink) : q
+    const pore = pq.x.length >= 3 ? roundedCurve(pq, bow, fillet * (1 + shrinkOf[i])) : null
+    poreQ.push(pq)
     const fans: Curve[] = []
-    for (let f = 1; f <= FANS; f++) {
+    for (let f = 1; f <= (shrink > 0 ? 0 : FANS); f++) {
       const s = f / (FANS + 1)
       const c = roundedCurve(insetPoly(i, halfGap * s), bow, fillet * s * s)
       if (c) fans.push(c)
@@ -385,15 +400,15 @@ export function buildGeometry(p: Params): Geometry {
 
   // ---- patch mosaic ---------------------------------------------------------------------
   const prng = mulberry32(p.seed * 17 + 5)
-  const PN = 110
-  const px: number[] = [], py: number[] = [], pst: number[] = []
+  const PN = 240
+  const px: number[] = [], py: number[] = [], pst: number[] = [], ptone: number[] = []
   const wts = [p.wLime, p.wGreen, p.wBlue, p.wLace].map((v) => Math.max(0, v))
   for (let k = 0; k < PN; k++) {
     const x = ext.x0 - 0.1 + prng() * (ext.x1 - ext.x0 + 0.2)
     const y = ext.y0 - 0.1 + prng() * (ext.y1 - ext.y0 + 0.2)
     const dep = Math.max(0, -B(x, y)) / (maxDepth || 1)
     // lace prefers the inside, colour prefers the edge
-    const ww = [wts[0] * (1.2 - dep), wts[1] * (1.1 - 0.5 * dep), wts[2] * (1 - 0.6 * dep), wts[3] * (0.55 + 1.2 * dep), Math.max(0, dep - 0.25) * 0.9]
+    const ww = [wts[0] * (1.25 - 0.6 * dep), wts[1] * (1 - 0.4 * dep), wts[2] * (0.9 - 0.5 * dep), wts[3] * (0.3 + 0.9 * dep), 0.25 + 1.3 * dep]
       .map((v) => Math.max(0, v))
     const sum = ww.reduce((a, b) => a + b, 0)
     let st = -1
@@ -403,17 +418,17 @@ export function buildGeometry(p: Params): Geometry {
       while (st < 4 && r >= ww[st]) { r -= ww[st]; st++ }
       if (st === 4) st = -1 // an empty break inside a filled cell
     }
-    px.push(x); py.push(y); pst.push(st)
+    px.push(x); py.push(y); pst.push(st); ptone.push(Math.floor(prng() * 3))
   }
   const styleAt = (x: number, y: number) => {
-    const wx = x + 0.07 * fbm(noise, x * 3.3, y * 3.3 + 40, 3)
-    const wy = y + 0.07 * fbm(noise, x * 3.3 + 70, y * 3.3, 3)
+    const wx = x + 0.05 * fbm(noise, x * 5, y * 5 + 40, 3)
+    const wy = y + 0.05 * fbm(noise, x * 5 + 70, y * 5, 3)
     let best = 0, bd = Infinity
     for (let k = 0; k < PN; k++) {
       const dd = (px[k] - wx) ** 2 + (py[k] - wy) ** 2
       if (dd < bd) { bd = dd; best = k }
     }
-    return pst[best]
+    return best
   }
 
   // ---- micro-foam: variable-radius circle packing in filled cells -------------------------
@@ -421,6 +436,8 @@ export function buildGeometry(p: Params): Geometry {
   const rb = 0.0085 * Math.max(0.2, p.bubbleSize) * (flat ? 1.8 : 1)
   const brng = mulberry32(p.seed * 31 + 11)
   const discs: number[] = [] // x y r
+  const discStyle: number[] = []
+  const discPatch: number[] = []
   const cellSize = rb * 3
   const hash = new Map<number, number[]>()
   const key = (i: number, j: number) => i * 73856093 ^ j * 19349663
@@ -455,50 +472,137 @@ export function buildGeometry(p: Params): Geometry {
     }
     return true
   }
-  const pool: number[] = []
-  for (let s = 0; s < ns; s++) if (filled[sampleOwner[s]]) pool.push(s)
+  // the thin edge band: where the outline is within `rim` (noisy) of the point
+  const rimAt = (x: number, y: number) => 0.042 * Math.max(0.25, 1 + 1.1 * noise(x * 3.1 + 5, y * 3.1 - 2))
+  const inBand = (x: number, y: number) => B(x, y) > -rimAt(x, y)
   let fails = 0
-  for (let t = 0; pool.length && t < 200000 && fails < 3500; t++) {
-    const s0 = pool[Math.floor(brng() * pool.length)]
+  const over: boolean[] = [] // lace fragments drawn over empty cells
+  for (let t = 0; ns && t < 260000 && fails < 4000; t++) {
+    const s0 = Math.floor(brng() * ns)
     const x = samples[2 * s0] + (brng() - 0.5) * hs * 1.6
     const y = samples[2 * s0 + 1] + (brng() - 0.5) * hs * 1.6
     fails++
+    if (B(x, y) > 0) continue
     let r = rb * Math.exp(0.5 * (brng() + brng() + brng() - 1.5) * 1.6)
-    const isBig = !flat && brng() < 0.035
+    const isBig = !flat && brng() < 0.03
     if (isBig) r = rb * (2.4 + brng() * 2.2)
-    if (!free(x, y, r)) continue
+    const band = inBand(x, y)
+    const pi = styleAt(x, y)
+    let st = pst[pi]
+    if (band && st < 0) st = 0 // the edge band is always foam
     const o = owner(x, y)
-    if (!filled[o]) continue
-    const q = sharp[o]
-    if (q.x.length < 3 || sdConvex(x, y, q.x, q.y) > -r * 0.45) continue
+    const q = poreQ[o]
+    const inside = q.x.length >= 3 && sdConvex(x, y, q.x, q.y) < -r * 0.3
+    if (!inside && st < 0 && shrinkOf[o] > 0) st = pi % 2 // gaps around cells that sit apart are always foam
+    if (st < 0) continue
+    let isOver = false
+    if (inside && !band && !filled[o]) {
+      // deep in an empty cell: only lace fragments, and only in some cells
+      if (!laceCell[o] || noise(x * 9 + 3, y * 9) < 0.15) continue
+      isOver = true
+    }
+    if (!free(x, y, r)) continue
     fails = 0
     const k = discs.length
     discs.push(x, y, r)
+    discStyle.push(isOver ? 3 : st)
+    discPatch.push(pi)
+    over.push(isOver)
     insert(k)
   }
 
-  const acc = () => ({ lime: [] as number[], green: [] as number[], blue: [] as number[], lace: [] as number[] })
-  const tiles = acc(), dark = acc(), mid = acc()
+  // ---- foam cells: local power diagram of the packed bubbles -----------------------------
+  // Each bubble owns the part of the plane closer (in power distance) to it than to its
+  // neighbours, bounded by a 16-gon around it. Neighbouring cells tile exactly, so the
+  // colour between holes reads as thin walls with small blobs where walls meet.
+  let maxR = 0
+  for (let k = 2; k < discs.length; k += 3) maxR = Math.max(maxR, discs[k])
+  const SIDES = 10
+  const sec = 1 / Math.cos(Math.PI / SIDES)
+  const halfWall = (flat ? 0 : 0.0017) * Math.sqrt(Math.max(0.3, p.bubbleSize))
+  const emptyTiles = () => [[], [], []] as Float64Array[][]
+  const tiles: Record<Style, Float64Array[][]> = { lime: emptyTiles(), green: emptyTiles(), blue: emptyTiles(), lace: emptyTiles() }
+  const holes: Record<Style, Curve[]> = { lime: [], green: [], blue: [], lace: [] }
+  const holesMid: Record<Style, Curve[]> = { lime: [], green: [], blue: [], lace: [] }
+  const overTiles: Float64Array[] = [], overHoles: Curve[] = []
   let bubbles = 0
+  const circleCurve = (x: number, y: number, r: number): Curve => {
+    const kk = 0.5523 * r
+    return Float64Array.from([
+      x + r, y,
+      x + r, y + kk, x + kk, y + r, x, y + r,
+      x - kk, y + r, x - r, y + kk, x - r, y,
+      x - r, y - kk, x - kk, y - r, x, y - r,
+      x + kk, y - r, x + r, y - kk, x + r, y,
+    ])
+  }
   for (let k = 0; k < discs.length; k += 3) {
     const x = discs[k], y = discs[k + 1], r = discs[k + 2]
-    const st = styleAt(x, y)
-    if (st < 0) continue
+    const di = k / 3
+    const pi = discPatch[di]
+    const st = discStyle[di]
+    const isOver = over[di]
     const name = STYLES[st]
+    const tone = name === "lace" ? 1 : ptone[pi]
     bubbles++
-    if (name === "lace") {
-      tiles.lace.push(x, y, flat ? r * 1.7 : r * 0.93) // flat: drawn as a dark-green fill
+    const R = r * (flat ? 1.8 : 1.6)
+    // planes: 16 tangents of the bounding circle, then power bisectors with neighbours
+    const planes: number[] = []
+    for (let a = 0; a < SIDES; a++) {
+      const ang = ((a + 0.5) / SIDES) * Math.PI * 2
+      const nx = Math.cos(ang), ny = Math.sin(ang)
+      planes.push(nx, ny, nx * x + ny * y + R)
+    }
+    const reach = R + maxR * 1.7
+    const i0 = Math.floor((x - reach) / cellSize), i1 = Math.floor((x + reach) / cellSize)
+    const j0 = Math.floor((y - reach) / cellSize), j1 = Math.floor((y + reach) / cellSize)
+    const seenN = new Set<number>()
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const l = hash.get(key(i, j))
+      if (!l) continue
+      for (const m of l) {
+        if (m === k || seenN.has(m)) continue
+        seenN.add(m)
+        const dx = discs[m] - x, dy = discs[m + 1] - y
+        const D = Math.hypot(dx, dy)
+        if (D < 1e-9 || D > R + discs[m + 2] * (flat ? 1.8 : 1.6)) continue
+        const c = (discs[m] ** 2 + discs[m + 1] ** 2 - x * x - y * y - discs[m + 2] ** 2 + r * r) / (2 * D)
+        planes.push(dx / D, dy / D, c)
+      }
+    }
+    const cellOf = (g: number): LPoly => {
+      const big = R * sec * 1.05
+      let q: LPoly = { x: [x - big, x + big, x + big, x - big], y: [y - big, y - big, y + big, y + big], lab: [-1, -1, -1, -1] }
+      for (let t = 0; t < planes.length; t += 3) q = clip(q, planes[t], planes[t + 1], planes[t + 2] - g, -1)
+      return q
+    }
+    const tile = cellOf(0)
+    if (tile.x.length < 3) continue
+    const flatTile = new Float64Array(tile.x.length * 2)
+    for (let t = 0; t < tile.x.length; t++) { flatTile[2 * t] = tile.x[t]; flatTile[2 * t + 1] = tile.y[t] }
+    if (isOver) {
+      if (flat) continue
+      overTiles.push(flatTile)
+      const hq = cellOf(halfWall * 0.7)
+      if (hq.x.length >= 3) { const c = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, -sdConvex(x, y, hq.x, hq.y)) * 0.6); if (c) overHoles.push(c) }
       continue
     }
-    tiles[name].push(x, y, r * (flat ? 1.7 : 1.32))
-    if (!flat && brng() < p.holes) {
-      const hr = r * (0.55 + brng() * 0.33)
-      if (brng() < 0.15) mid[name].push(x, y, hr)
-      else dark[name].push(x, y, hr)
+    tiles[name][tone].push(flatTile)
+    if (flat) continue
+    if (name !== "lace" && brng() > p.holes) continue // a closed bubble: solid colour
+    let hole: Curve | null
+    if (r > rb * 2.3) {
+      hole = circleCurve(x, y, Math.min(r * 0.96, -sdConvex(x, y, tile.x, tile.y) - halfWall))
+    } else {
+      const hq = cellOf(name === "lace" ? halfWall * 0.7 : halfWall)
+      if (hq.x.length < 3) continue
+      const inr = -sdConvex(x, y, hq.x, hq.y)
+      hole = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, inr) * 0.6)
     }
+    if (!hole) continue
+    if (name !== "lace" && brng() < 0.14) holesMid[name].push(hole)
+    else holes[name].push(hole)
   }
-  const f64 = (o: ReturnType<typeof acc>) =>
-    ({ lime: Float64Array.from(o.lime), green: Float64Array.from(o.green), blue: Float64Array.from(o.blue), lace: Float64Array.from(o.lace) })
 
   // ---- dots on junctions ----------------------------------------------------------------
   const seen = new Set<string>()
@@ -524,6 +628,18 @@ export function buildGeometry(p: Params): Geometry {
   const vals = new Float64Array(onx * ony)
   for (let j = 0; j < ony; j++) for (let i = 0; i < onx; i++) vals[j * onx + i] = -B(ox0 + (i + 0.5) * oh, oy0 + (j + 0.5) * oh)
   const mp = contours().size([onx, ony]).contour(vals as unknown as number[], 0)
+  const ivals = new Float64Array(onx * ony)
+  for (let j = 0; j < ony; j++) for (let i = 0; i < onx; i++) {
+    const x = ox0 + (i + 0.5) * oh, y = oy0 + (j + 0.5) * oh
+    ivals[j * onx + i] = vals[j * onx + i] - rimAt(x, y)
+  }
+  const imp = contours().size([onx, ony]).contour(ivals as unknown as number[], 0)
+  const inner: Float64Array[] = []
+  for (const poly of imp.coordinates) for (const ring of poly) {
+    const f = new Float64Array((ring.length - 1) * 2)
+    for (let k = 0; k < ring.length - 1; k++) { f[2 * k] = ox0 + ring[k][0] * oh; f[2 * k + 1] = oy0 + ring[k][1] * oh }
+    inner.push(f)
+  }
   let outline = new Float64Array(0)
   for (const poly of mp.coordinates) {
     const ring = poly[0]
@@ -555,8 +671,8 @@ export function buildGeometry(p: Params): Geometry {
   }
 
   return {
-    flat, outline, cells,
-    tiles: f64(tiles), holesDark: f64(dark), holesMid: f64(mid),
+    flat, outline, inner, cells, overTiles, overHoles,
+    tiles, holes, holesMid,
     dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: Float64Array.from(ticks),
     hub, extent: ext,
     stats: { cells: N, bubbles, ms: Math.round(performance.now() - t0) },

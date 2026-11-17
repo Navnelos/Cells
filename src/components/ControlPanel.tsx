@@ -93,6 +93,7 @@ export function ControlPanel({
           <SliderField label="Giant bubbles" value={p.giants} min={0} max={20} step={1} onChange={(v) => set({ giants: v })} />
           <SliderField label="Giant size" value={p.giantSize} min={1} max={3.5} onChange={(v) => set({ giantSize: v })} />
           <SliderField label="Size variety" value={p.variety} min={0} max={1.2} onChange={(v) => set({ variety: v })} />
+          <SliderField label="Cells apart" value={p.spacing} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set({ spacing: v })} hint="Share of cells that sit apart from their neighbours, with foam between" />
         </Section>
 
         <Section title="Strands">
