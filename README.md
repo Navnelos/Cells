@@ -5,15 +5,17 @@ fanned junction webs, and a ring of micro-foam (lime, green, blue, white lace) i
 
 ## How it's made
 
-- **Outline:** a smooth union of circles. Edit them on the canvas with **Edit shape** (or E).
-- **Bubbles:** circle packing. Bubbles of very mixed sizes are placed by a size field (large
-  cavities inside, shrinking to fine foam toward the edge, with nested clusters between), then
-  inflated until they press against their neighbours. Each bubble is round and flattens only
-  where it touches another, so the gaps at the junctions are small concave triangles.
-- **Strands and webs:** each large bubble is outlined by a thin strand. The web lines are the same
-  bubble grown step by step into the gaps around it, so they fan out at the junctions.
-- **Foam:** small bubbles are drawn as coloured walls with dark holes (lime, green, blue), medium
-  ones partly as white lace. **Flat colour** mode fills them solid.
+The picture is drawn on the GPU, per pixel, so colour and line changes are instant.
+
+- **Outline:** a smooth union of circles you can edit (**Edit shape** or E).
+- **Structure:** a density field decides where the foam is calm (large cavities), transitional
+  (medium cells) or intricate (foam). A few hundred weighted seeds are placed accordingly and
+  relaxed, and they form one shared partition, so neighbouring cells share their walls.
+- **Cavities and webs:** wall distances are combined with a smooth minimum, which rounds every
+  junction the same way. The fan webs at the junctions are iso-lines of that same field.
+- **Foam:** foam cells are filled with a micro partition at two scales, coloured per micro-cell
+  by smooth colour fields (lime, green, blue, white lace).
+- **Export:** PNG or JPEG, rendered on the GPU at up to 8192 px.
 
 **Keys:** R gives a new seed, E toggles shape editing, ⌘Z / ⇧⌘Z undo and redo. Export to SVG, PNG or JPEG.
 

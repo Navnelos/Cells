@@ -44,7 +44,6 @@ export interface Params {
   gridColor: string
   ticks: boolean
   dots: boolean
-  hatching: boolean
   // export
   aspect: Aspect
   transparent: boolean
@@ -66,22 +65,22 @@ export const DEFAULT_LOBES: Lobe[] = [
 export const DEFAULTS: Params = {
   lobes: DEFAULT_LOBES,
   seed: 202,
-  cells: 26,
-  giants: 4,
-  giantSize: 1.6,
+  cells: 32,
+  giants: 3,
+  giantSize: 1.3,
   variety: 0.45,
-  spacing: 0.85,
+  spacing: 0.45,
   strandWidth: 1.4,
   webs: 1.1,
   glow: 0.3,
   fill: "foam",
-  foamAmount: 0.42,
-  bubbleSize: 1.15,
-  holes: 0.92,
-  wLime: 1.3,
-  wGreen: 0.9,
-  wBlue: 0.45,
-  wLace: 1,
+  foamAmount: 0.32,
+  bubbleSize: 1,
+  holes: 0.85,
+  wLime: 1,
+  wGreen: 1.1,
+  wBlue: 0.6,
+  wLace: 0.9,
   bg: "#081528",
   strand: "#cfe03c",
   hub: "#f4ef1c",
@@ -93,7 +92,6 @@ export const DEFAULTS: Params = {
   gridColor: "#5b6f93",
   ticks: true,
   dots: true,
-  hatching: true,
   aspect: "7:6",
   transparent: false,
   exportSize: 4096,
@@ -101,6 +99,5 @@ export const DEFAULTS: Params = {
 
 /** Parameters that change the geometry. Everything else is paint. */
 export const STRUCTURE_KEYS: (keyof Params)[] = [
-  "lobes", "seed", "cells", "giants", "giantSize", "variety", "spacing", "webs", "fill", "foamAmount", "bubbleSize", "holes",
-  "wLime", "wGreen", "wBlue", "wLace",
+  "lobes", "seed", "cells", "giants", "giantSize", "variety", "spacing", "foamAmount",
 ]

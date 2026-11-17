@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Dices, FileCode2, ImageDown, Undo2 } from "lucide-react"
+import { Dices, ImageDown, Undo2 } from "lucide-react"
 import { toast } from "sonner"
 
 import { ColorField, Section, SegmentField, SelectField, SliderField, SwitchField } from "@/components/fields"
@@ -35,20 +35,14 @@ export function ControlPanel({
   const [busy, setBusy] = useState(false)
   const foam = p.fill === "foam"
 
-  const exportFile = async (kind: "svg" | "png" | "jpg") => {
+  const exportFile = async (kind: "png" | "jpg") => {
     if (!engine) return
     setBusy(true)
     await new Promise((r) => setTimeout(r, 30))
     try {
-      if (kind === "svg") {
-        const svg = engine.exportSVG()
-        download(new Blob([svg], { type: "image/svg+xml" }), `cells-${p.seed}.svg`)
-        toast.success(`SVG exported · ${Math.round(svg.length / 1024)} KB`)
-      } else {
-        const blob = await engine.exportRaster(kind === "png" ? "image/png" : "image/jpeg")
-        download(blob, `cells-${p.seed}.${kind}`)
-        toast.success(`${kind.toUpperCase()} exported · ${(blob.size / 1048576).toFixed(1)} MB`)
-      }
+      const blob = await engine.exportRaster(kind === "png" ? "image/png" : "image/jpeg")
+      download(blob, `cells-${p.seed}.${kind}`)
+      toast.success(`${kind.toUpperCase()} exported · ${(blob.size / 1048576).toFixed(1)} MB`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Export failed")
     } finally {
@@ -152,7 +146,7 @@ export function ControlPanel({
               { value: "9:16", label: "9:16" },
             ]}
           />
-          <SwitchField label="Transparent background" checked={p.transparent} onChange={(v) => set({ transparent: v })} hint="PNG and SVG only" />
+          <SwitchField label="Transparent background" checked={p.transparent} onChange={(v) => set({ transparent: v })} hint="PNG only" />
           <SelectField
             label="PNG / JPEG size"
             value={String(p.exportSize)}
@@ -163,9 +157,8 @@ export function ControlPanel({
               { value: "8192", label: "8192 px" },
             ]}
           />
-          <div className="grid grid-cols-3 gap-2">
-            <Button size="sm" disabled={busy} onClick={() => exportFile("svg")}><FileCode2 /> SVG</Button>
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => exportFile("png")}><ImageDown /> PNG</Button>
+          <div className="grid grid-cols-2 gap-2">
+            <Button size="sm" disabled={busy} onClick={() => exportFile("png")}><ImageDown /> PNG</Button>
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => exportFile("jpg")}><ImageDown /> JPEG</Button>
           </div>
         </Section>

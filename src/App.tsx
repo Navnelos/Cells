@@ -67,7 +67,7 @@ export default function App() {
           </div>
         )}
         <div className="pointer-events-none absolute bottom-3 left-4 font-mono text-[11px] text-white/40">
-          {stats ? `${stats.cells} cells · ${stats.bubbles.toLocaleString()} bubbles · ${stats.buildMs} ms` : ""}
+          {stats ? `${stats.cells} cells · ${stats.buildMs} ms build` : ""}
         </div>
       </main>
       <ControlPanel p={p} set={set} replace={setP} engine={engine} />
