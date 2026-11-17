@@ -45,6 +45,7 @@ export type Op =
   | { k: "poly"; p: Float64Array; fill?: string; alpha?: number }
   | { k: "polys"; p: Float64Array[]; fill: string; stroke?: string; width?: number; alpha?: number }
   | { k: "lines"; s: Float64Array; stroke: string; width: number; alpha?: number }
+  | { k: "polyline"; p: Float64Array[]; stroke: string; width: number; alpha?: number }
   | { k: "discs"; d: Float64Array; fill?: string; stroke?: string; width?: number; alpha?: number }
   | { k: "radial"; x: number; y: number; r: number; color: string; alpha: number }
   | { k: "clipPoly"; p: Float64Array }
@@ -155,6 +156,12 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (1 + 0.7 * t) * px, alpha: 0.95 })
   }
 
+  // the thin stretches of the edge: a fine strand along the outline
+  if (g.edgeLines.length) {
+    ops.push({ k: "polyline", p: g.edgeLines, stroke: p.strand, width: p.strandWidth * 3 * px, alpha: 0.08 })
+    ops.push({ k: "polyline", p: g.edgeLines, stroke: p.strand, width: p.strandWidth * 0.85 * px, alpha: 0.9 })
+  }
+
   if (p.dots) {
     if (g.dots.length) ops.push({ k: "discs", d: g.dots, fill: p.lace })
     if (g.rings.length) {
@@ -216,6 +223,11 @@ export function paintCanvas(ctx: CanvasRenderingContext2D, ops: Op[], frame: Fra
         for (const c of op.c) curvePath(ctx, c)
         if (op.fill) { ctx.fillStyle = op.fill; ctx.fill("nonzero") }
         if (op.stroke) { ctx.strokeStyle = op.stroke; ctx.lineWidth = op.width ?? 0.001; ctx.stroke() }
+        break
+      case "polyline":
+        ctx.beginPath()
+        for (const q of op.p) { ctx.moveTo(q[0], q[1]); for (let i = 2; i < q.length; i += 2) ctx.lineTo(q[i], q[i + 1]) }
+        ctx.strokeStyle = op.stroke; ctx.lineWidth = op.width; ctx.stroke()
         break
       case "lines": {
         ctx.beginPath()
@@ -297,6 +309,11 @@ export function toSVG(ops: Op[], frame: FrameBox): string {
         const d = op.c.map(curveD).join("")
         if (!d) break
         out.push(`<path d="${d}" fill="${op.fill ?? "none"}"${op.stroke ? ` stroke="${op.stroke}" stroke-width="${n4(op.width ?? 0.001)}" stroke-linejoin="round"` : ""}${a(op.alpha)}/>`)
+        break
+      }
+      case "polyline": {
+        const d = op.p.map((q) => { let t = `M${n4(q[0])} ${n4(q[1])}`; for (let i = 2; i < q.length; i += 2) t += `L${n4(q[i])} ${n4(q[i + 1])}`; return t }).join("")
+        if (d) out.push(`<path d="${d}" fill="none" stroke="${op.stroke}" stroke-width="${n4(op.width)}" stroke-linecap="round" stroke-linejoin="round"${a(op.alpha)}/>`)
         break
       }
       case "lines": {

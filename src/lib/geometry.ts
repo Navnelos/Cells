@@ -47,6 +47,7 @@ export interface Cell {
 export interface Geometry {
   flat: boolean
   outline: Float64Array // polygon, densely sampled
+  edgeLines: Float64Array[] // stretches of the outline drawn as a thin strand
   overTiles: Float64Array[] // lace fragments over empty cells
   overHoles: Curve[]
   cells: Cell[]
@@ -308,6 +309,18 @@ export function buildGeometry(p: Params): Geometry {
       for (let k = 0; k < ring.length - 1; k++) { outline[2 * k] = ox0 + ring[k][0] * oh; outline[2 * k + 1] = oy0 + ring[k][1] * oh }
     }
   }
+  // where the band is thin, the edge itself is drawn as a strand
+  const edgeLines: Float64Array[] = []
+  {
+    let cur: number[] = []
+    const m = outline.length / 2
+    for (let k = 0; k <= m; k++) {
+      const x = outline[2 * (k % m)], y = outline[2 * (k % m) + 1]
+      if (rimAt(x, y) < 0.034) cur.push(x, y)
+      else if (cur.length) { if (cur.length >= 8) edgeLines.push(Float64Array.from(cur)); cur = [] }
+    }
+    if (cur.length >= 8) edgeLines.push(Float64Array.from(cur))
+  }
   // edge planes: tangent to the outline, pulled in by the band thickness there
   const edgePlanes: [number, number, number, number, number][] = [] // nx ny c px py
   for (let k = 0; k < outline.length / 2; k += 3) {
@@ -524,7 +537,7 @@ export function buildGeometry(p: Params): Geometry {
     const band = inBand(x, y)
     const pi = styleAt(x, y)
     let st = pst[pi]
-    if (band && st < 0) st = 0 // the edge band is always foam
+    if (band) st = rimAt(x, y) > 0.034 ? (st >= 0 && st < 3 ? st : pi % 2) : 3 // thick band: colour; thin band: lace inside a line
     const o = owner(x, y)
     const q = poreQ[o]
     const inside = q.x.length >= 3 && sdConvex(x, y, q.x, q.y) < -r * 0.3
@@ -682,7 +695,7 @@ export function buildGeometry(p: Params): Geometry {
   }
 
   return {
-    flat, outline, cells, overTiles, overHoles,
+    flat, outline, edgeLines, cells, overTiles, overHoles,
     tiles, holes, holesMid,
     dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: Float64Array.from(ticks),
     hub, extent: ext,
