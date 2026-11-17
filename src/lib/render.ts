@@ -95,7 +95,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   // ---- the shape -------------------------------------------------------------------------
   ops.push({ k: "clipPoly", p: g.outline })
   // junction webs: a dark, slightly tinted base under everything
-  ops.push({ k: "poly", p: g.outline, fill: mix(mix(p.bg, p.blue, 0.22), p.strand, 0.06) })
+  ops.push({ k: "poly", p: g.outline, fill: mix(mix(p.bg, p.blue, 0.1), p.strand, 0.04) })
   if (p.glow > 0) ops.push({ k: "radial", x: g.hub[0], y: g.hub[1], r: 0.45, color: p.hub, alpha: 0.4 * p.glow })
 
   // junction webs: a soft lime haze of very fine lines converging on the walls
@@ -105,32 +105,32 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     ops.push({ k: "curves", c: cell.fans, stroke: mix(p.strand, p.hub, t), width: 0.42 * px, alpha: Math.min(0.85, 0.22 + 0.4 * t) })
   }
 
-  ops.push({ k: "unclip" }) // outline: foam and edge cells may break past it
   const pores = g.cells.map((cl) => cl.pore).filter((x): x is Curve => !!x)
   const emptyPores = g.cells.filter((cl) => cl.pore && !cl.filled).map((cl) => cl.pore!) as Curve[]
   // all cells dark (inside the edge band)
   ops.push({ k: "curves", c: pores, fill: p.bg })
 
-  // foam: between cells, along the edge band, and in the cells that carry it
+  // foam: translucent colour fills, darker holes, and fine lighter walls drawn as lines
   const colors: Record<(typeof STYLES)[number], string> = { lime: p.lime, green: p.green, blue: p.blue, lace: p.lace }
   for (const s of STYLES) {
-    const base = s === "lace" && g.flat ? mix(p.green, p.bg, 0.55) : colors[s]
-    const tones = [mix(base, p.bg, 0.06), base, mix(base, "#ffffff", 0.18)]
+    if (s === "lace" && !g.flat) continue
+    const base = s === "lace" ? mix(p.green, p.bg, 0.55) : colors[s]
+    // lime areas come in three tones: light green, lime, yellow-lime
+    const tones = s === "lime" ? [p.green, base, mix(base, p.green, 0.45)] : s === "green" ? [mix(base, p.bg, 0.25), mix(base, p.bg, 0.1), base] : [mix(base, p.bg, 0.1), base, mix(base, "#ffffff", 0.12)]
     g.tiles[s].forEach((polys, i) => {
-      if (polys.length) ops.push({ k: "polys", p: polys, fill: tones[i], alpha: s === "lace" && !g.flat ? 0.82 : 1 })
+      if (polys.length) ops.push({ k: "polys", p: polys, fill: tones[i] })
     })
-    const holeCol = s === "lace" ? p.bg : mix(colors[s], p.bg, 0.74)
-    if (g.holes[s].length) ops.push({ k: "curves", c: g.holes[s], fill: holeCol })
-    if (g.holesMid[s].length) ops.push({ k: "curves", c: g.holesMid[s], fill: mix(colors[s], p.bg, 0.55) })
+    if (g.holes[s].length) {
+      ops.push({ k: "curves", c: g.holes[s], fill: mix(colors[s], p.bg, s === "green" ? 0.82 : 0.7) })
+    }
+    if (g.holesMid[s].length) ops.push({ k: "curves", c: g.holesMid[s], fill: mix(colors[s], p.bg, 0.5), alpha: 0.85 })
   }
+
 
   // empty cells cut back to dark, then lace fragments and faint hatching inside some of them
   ops.push({ k: "curves", c: emptyPores, fill: p.bg })
   ops.push({ k: "clipCurves", c: emptyPores })
-  if (g.overTiles.length) {
-    ops.push({ k: "polys", p: g.overTiles, fill: p.lace, alpha: 0.95 })
-    ops.push({ k: "curves", c: g.overHoles, fill: p.bg })
-  }
+  if (g.lace.length) ops.push({ k: "discs", d: g.lace, stroke: p.lace, width: 0.85 * px, alpha: 0.9 })
   if (p.hatching) {
     for (const cell of g.cells) {
       const h = cell.hatch
@@ -147,6 +147,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   }
   ops.push({ k: "unclip" })
 
+  ops.push({ k: "unclip" }) // outline
   // strands: a soft glow pass, then the thin line; brighter towards the hub (stop at the edge band)
   for (const cell of g.cells) {
     if (!cell.pore) continue

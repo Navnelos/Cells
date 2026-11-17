@@ -50,6 +50,7 @@ export interface Geometry {
   edgeLines: Float64Array[] // stretches of the outline drawn as a thin strand
   overTiles: Float64Array[] // lace fragments over empty cells
   overHoles: Curve[]
+  lace: Float64Array // x y r: white lace circles
   cells: Cell[]
   tiles: Record<Style, Float64Array[][]> // per style, three tones of polygons
   holes: Record<Style, Curve[]>
@@ -376,7 +377,7 @@ export function buildGeometry(p: Params): Geometry {
     }
   }
   const bowFor = (i: number) => (l: number): [number, number] => {
-    if (l <= -2) { const e = edgePlanes[-2 - l]; return [e[0] * 0.01, e[1] * 0.01] }
+    if (l <= -2) return [0, 0]
     if (l < 0) return [0, 0]
     const len = wallLen.get(i < l ? `${i}:${l}` : `${l}:${i}`) ?? 0
     const pl = planes[i].get(l)
@@ -403,7 +404,7 @@ export function buildGeometry(p: Params): Geometry {
   // cells that reach the outline are always foam (the edge is never an empty hole)
   for (let k = 0; k < Math.round(order.length * filledFrac); k++) filled[order[k]] = true
   // a few empty cells carry fragments of white lace
-  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.5)
+  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.35)
   const shrinkOf = sx.map((_, i) => (!giant[i] && rng() < (Math.hypot(sx[i] - hub[0], sy[i] - hub[1]) < 0.3 ? 0.7 : p.spacing * (cellDepth[i] < 0.2 ? 1.1 : cellDepth[i] < 0.6 ? 0.25 : 0.7)) ? 0.12 + rng() * 0.3 : 0))
 
   const cells: Cell[] = []
@@ -482,7 +483,7 @@ export function buildGeometry(p: Params): Geometry {
 
   // ---- micro-foam: variable-radius circle packing in filled cells -------------------------
   const flat = p.fill === "flat"
-  const rb = 0.0085 * Math.max(0.2, p.bubbleSize) * (flat ? 1.8 : 1)
+  const rb = 0.0085 * Math.max(0.2, p.bubbleSize) * (flat ? 1.6 : 1)
   const brng = mulberry32(p.seed * 31 + 11)
   const discs: number[] = [] // x y r
   const discStyle: number[] = []
@@ -548,10 +549,11 @@ export function buildGeometry(p: Params): Geometry {
     let isOver = false
     if (inside && !band && !filled[o]) {
       // deep in an empty cell: only lace fragments, and only in some cells
-      if (!laceCell[o] || noise(x * 9 + 3, y * 9) < 0.15) continue
+      if (!laceCell[o] || sdConvex(x, y, q.x, q.y) < -0.04 - 0.045 * noise(x * 7 + 3, y * 7)) continue
       isOver = true
-      r *= 0.7
+      r *= 1.1 + 1.2 * brng() * brng()
     }
+    if (st === 3 && !isOver) r *= 1.1 + 1.0 * brng() * brng()
     if (!free(x, y, r)) continue
     fails = 0
     const k = discs.length
@@ -570,12 +572,13 @@ export function buildGeometry(p: Params): Geometry {
   for (let k = 2; k < discs.length; k += 3) maxR = Math.max(maxR, discs[k])
   const SIDES = 10
   const sec = 1 / Math.cos(Math.PI / SIDES)
-  const halfWall = (flat ? 0 : 0.0017) * Math.sqrt(Math.max(0.3, p.bubbleSize))
+  const halfWall = (flat ? 0 : 0.0024) * Math.sqrt(Math.max(0.3, p.bubbleSize))
   const emptyTiles = () => [[], [], []] as Float64Array[][]
   const tiles: Record<Style, Float64Array[][]> = { lime: emptyTiles(), green: emptyTiles(), blue: emptyTiles(), lace: emptyTiles() }
   const holes: Record<Style, Curve[]> = { lime: [], green: [], blue: [], lace: [] }
   const holesMid: Record<Style, Curve[]> = { lime: [], green: [], blue: [], lace: [] }
   const overTiles: Float64Array[] = [], overHoles: Curve[] = []
+  const laceCircles: number[] = []
   let bubbles = 0
   const circleCurve = (x: number, y: number, r: number): Curve => {
     const kk = 0.5523 * r
@@ -596,7 +599,7 @@ export function buildGeometry(p: Params): Geometry {
     const name = STYLES[st]
     const tone = name === "lace" ? 1 : ptone[pi]
     bubbles++
-    const R = r * (flat ? 1.8 : 1.6)
+    const R = r * (flat ? 2.4 : st === 3 ? 1.12 : 2.3)
     // planes: 16 tangents of the bounding circle, then power bisectors with neighbours
     const planes: number[] = []
     for (let a = 0; a < SIDES; a++) {
@@ -616,7 +619,7 @@ export function buildGeometry(p: Params): Geometry {
         seenN.add(m)
         const dx = discs[m] - x, dy = discs[m + 1] - y
         const D = Math.hypot(dx, dy)
-        if (D < 1e-9 || D > R + discs[m + 2] * (flat ? 1.8 : 1.6)) continue
+        if (D < 1e-9 || D > R + discs[m + 2] * (flat ? 2.4 : 2.3)) continue
         const c = (discs[m] ** 2 + discs[m + 1] ** 2 - x * x - y * y - discs[m + 2] ** 2 + r * r) / (2 * D)
         planes.push(dx / D, dy / D, c)
       }
@@ -633,26 +636,38 @@ export function buildGeometry(p: Params): Geometry {
     for (let t = 0; t < tile.x.length; t++) { flatTile[2 * t] = tile.x[t]; flatTile[2 * t + 1] = tile.y[t] }
     if (isOver) {
       if (flat) continue
-      overTiles.push(flatTile)
-      const hq = cellOf(halfWall * 0.45)
-      if (hq.x.length >= 3) { const c = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, -sdConvex(x, y, hq.x, hq.y)) * 0.6); if (c) overHoles.push(c) }
+      laceCircles.push(x, y, r * (0.97 + 0.03 * brng()))
+      continue
+    }
+    // lace: thin line circles only (no fill)
+    if (name === "lace") {
+      if (!flat) laceCircles.push(x, y, r * (0.97 + 0.03 * brng()))
+      else tiles[name][tone].push(flatTile)
       continue
     }
     tiles[name][tone].push(flatTile)
     if (flat) continue
-    if (name !== "lace" && brng() > p.holes) continue // a closed bubble: solid colour
-    let hole: Curve | null
-    if (r > rb * 2.3) {
-      hole = circleCurve(x, y, Math.min(r * 0.96, -sdConvex(x, y, tile.x, tile.y) - halfWall))
+    if (name === "green") {
+      // foam network: green walls around irregular dark holes
+      if (brng() > p.holes) continue
+      let hole: Curve | null
+      if (r > rb * 2.3) hole = circleCurve(x, y, Math.min(r * 0.94, -sdConvex(x, y, tile.x, tile.y) - halfWall))
+      else {
+        const hq = cellOf(halfWall)
+        if (hq.x.length < 3) continue
+        hole = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, -sdConvex(x, y, hq.x, hq.y)) * 0.55)
+      }
+      if (!hole) continue
+      if (brng() < 0.18) holesMid[name].push(hole)
+      else holes[name].push(hole)
     } else {
-      const hq = cellOf(name === "lace" ? halfWall * 0.7 : halfWall)
-      if (hq.x.length < 3) continue
-      const inr = -sdConvex(x, y, hq.x, hq.y)
-      hole = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, inr) * 0.6)
+      // solid lime / blue: only occasional small dark specks
+      const speck = name === "blue" ? 0.5 : 0.1
+      if (brng() > speck) continue
+      const sr = r * (0.22 + 0.3 * brng())
+      const a = brng() * Math.PI * 2, d = r * 0.3 * brng()
+      holes[name].push(circleCurve(x + Math.cos(a) * d, y + Math.sin(a) * d, sr))
     }
-    if (!hole) continue
-    if (name !== "lace" && brng() < 0.14) holesMid[name].push(hole)
-    else holes[name].push(hole)
   }
 
   // ---- dots on junctions ----------------------------------------------------------------
@@ -695,7 +710,7 @@ export function buildGeometry(p: Params): Geometry {
   }
 
   return {
-    flat, outline, edgeLines, cells, overTiles, overHoles,
+    flat, outline, edgeLines, cells, overTiles, overHoles, lace: Float64Array.from(laceCircles),
     tiles, holes, holesMid,
     dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: Float64Array.from(ticks),
     hub, extent: ext,
