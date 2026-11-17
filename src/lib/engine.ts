@@ -1,87 +1,34 @@
-// Owns the canvas, the camera and the render loop. React only pushes params in.
-// Geometry is rebuilt only when a structural parameter changes; while a slider is
-// being dragged a coarser grid is used, then the full-quality build follows.
+// Owns the canvas. React pushes params in; geometry is rebuilt only when a structural
+// parameter changes. In shape-edit mode the outline circles can be dragged on the canvas.
 
 import { buildGeometry, type Geometry } from "./geometry"
-import { DEFAULTS, STRUCTURE_KEYS, type Params } from "./params"
-import { Camera, aspectRatio, buildOps, computeFrame, paintCanvas, toSVG, type FrameBox, type M3 } from "./render"
+import { DEFAULTS, STRUCTURE_KEYS, type Lobe, type Params } from "./params"
+import { aspectRatio, buildOps, computeFrame, paintCanvas, toSVG, viewFor, type FrameBox } from "./render"
 
 export interface EngineStats {
   cells: number
-  pores: number
+  bubbles: number
   buildMs: number
-  drawMs: number
-}
-
-export interface ViewState {
-  rot: number[]
-}
-
-const PREVIEW_ROWS = 400
-const DRAFT_ROWS = 220
-
-// ---- 3×3 rotation helpers ------------------------------------------------------------
-
-export const ident3 = (): M3 => Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1])
-
-export function axisAngle3(x: number, y: number, z: number, a: number): M3 {
-  const l = Math.hypot(x, y, z) || 1
-  x /= l; y /= l; z /= l
-  const c = Math.cos(a), s = Math.sin(a), t = 1 - c
-  return Float64Array.from([
-    t * x * x + c, t * x * y - s * z, t * x * z + s * y,
-    t * x * y + s * z, t * y * y + c, t * y * z - s * x,
-    t * x * z - s * y, t * y * z + s * x, t * z * z + c,
-  ])
-}
-
-export function mul3(a: M3, b: M3): M3 {
-  const o = new Float64Array(9)
-  for (let i = 0; i < 3; i++)
-    for (let j = 0; j < 3; j++) o[3 * i + j] = a[3 * i] * b[j] + a[3 * i + 1] * b[3 + j] + a[3 * i + 2] * b[6 + j]
-  return o
-}
-
-function orthonormalize3(m: M3): M3 {
-  // Gram–Schmidt on the rows
-  const r0 = [m[0], m[1], m[2]], r1 = [m[3], m[4], m[5]]
-  const n0 = Math.hypot(...r0) || 1
-  for (let i = 0; i < 3; i++) r0[i] /= n0
-  const d = r0[0] * r1[0] + r0[1] * r1[1] + r0[2] * r1[2]
-  for (let i = 0; i < 3; i++) r1[i] -= d * r0[i]
-  const n1 = Math.hypot(...r1) || 1
-  for (let i = 0; i < 3; i++) r1[i] /= n1
-  const r2 = [r0[1] * r1[2] - r0[2] * r1[1], r0[2] * r1[0] - r0[0] * r1[2], r0[0] * r1[1] - r0[1] * r1[0]]
-  m.set([...r0, ...r1, ...r2])
-  return m
-}
-
-export const VIEWS: Record<string, () => M3> = {
-  flat: ident3,
-  tilt: () => mul3(axisAngle3(1, 0, 0, -0.95), axisAngle3(0, 0, 1, -0.35)),
-  iso: () => mul3(axisAngle3(1, 0, 0, -0.62), axisAngle3(0, 1, 0, 0.62)),
-  low: () => mul3(axisAngle3(1, 0, 0, -1.28), axisAngle3(0, 0, 1, 0.2)),
 }
 
 export class Engine {
   private ctx: CanvasRenderingContext2D
   private p: Params = DEFAULTS
   private geom: Geometry | null = null
-  private draft = false
-  private rot: M3 = ident3()
   private structKey = ""
   private dirty = true
   private raf = 0
-  private last = 0
-  private ops = 0
   private dpr = 1
-  private fullTimer = 0
-  private drag: { id: number; x: number; y: number; moved: number } | null = null
+  private frame: FrameBox | null = null
   private ro: ResizeObserver
-  private stats: EngineStats = { cells: 0, pores: 0, buildMs: 0, drawMs: 0 }
-  private lastStatEmit = 0
+  private editing = false
+  private lobes: Lobe[] = []
+  private drag: { id: number; i: number; mode: "move" | "size"; ox: number; oy: number } | null = null
+  private hover = -1
+  private lastBuild = 0
+  private pendingBuild = 0
   onStats?: (s: EngineStats) => void
-  onZoom?: (z: number) => void
+  onLobes?: (l: Lobe[]) => void
 
   constructor(private canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d")
@@ -93,103 +40,89 @@ export class Engine {
     canvas.addEventListener("pointermove", this.onMove)
     canvas.addEventListener("pointerup", this.onUp)
     canvas.addEventListener("pointercancel", this.onUp)
-    canvas.addEventListener("wheel", this.onWheel, { passive: false })
     canvas.addEventListener("dblclick", this.onDbl)
+    canvas.addEventListener("contextmenu", this.onContext)
     this.resize()
     this.raf = requestAnimationFrame(this.tick)
   }
 
   destroy() {
     cancelAnimationFrame(this.raf)
-    clearTimeout(this.fullTimer)
+    clearTimeout(this.pendingBuild)
     this.ro.disconnect()
     this.canvas.removeEventListener("pointerdown", this.onDown)
     this.canvas.removeEventListener("pointermove", this.onMove)
     this.canvas.removeEventListener("pointerup", this.onUp)
     this.canvas.removeEventListener("pointercancel", this.onUp)
-    this.canvas.removeEventListener("wheel", this.onWheel)
     this.canvas.removeEventListener("dblclick", this.onDbl)
+    this.canvas.removeEventListener("contextmenu", this.onContext)
   }
 
   setParams(p: Params) {
-    const key = JSON.stringify(STRUCTURE_KEYS.map((k) => p[k]))
     this.p = p
+    if (!this.drag) this.lobes = p.lobes.map((l) => ({ ...l }))
+    const key = JSON.stringify(STRUCTURE_KEYS.map((k) => p[k]))
     if (key !== this.structKey) {
       const first = !this.structKey
       this.structKey = key
-      if (first) this.rebuild(PREVIEW_ROWS)
-      else {
-        // quick draft now, full quality once the change settles
-        this.rebuild(DRAFT_ROWS)
-        clearTimeout(this.fullTimer)
-        this.fullTimer = window.setTimeout(() => { this.rebuild(PREVIEW_ROWS); this.dirty = true }, 260)
-      }
+      // coalesce rapid slider changes into one rebuild per frame or so
+      if (first) this.rebuild()
+      else { clearTimeout(this.pendingBuild); this.pendingBuild = window.setTimeout(() => this.rebuild(), 40) }
     }
     this.dirty = true
   }
 
-  getView(): ViewState {
-    return { rot: Array.from(this.rot, (v) => Math.round(v * 1e6) / 1e6) }
-  }
-
-  setView(v: ViewState) {
-    if (v.rot?.length === 9) this.rot = orthonormalize3(Float64Array.from(v.rot))
+  setEditing(on: boolean) {
+    this.editing = on
+    this.canvas.style.cursor = on ? "crosshair" : "default"
     this.dirty = true
   }
 
-  setViewPreset(name: keyof typeof VIEWS) {
-    this.rot = VIEWS[name]()
-    this.dirty = true
-  }
+  // ---- export -----------------------------------------------------------------------------
 
-  resetView() { this.rot = ident3(); this.dirty = true }
-
-  // ---- export ---------------------------------------------------------------------------
-
-  private exportDims(longEdge: number) {
-    const a = aspectRatio(this.p.aspect) ?? this.canvas.width / Math.max(1, this.canvas.height)
-    return a >= 1 ? { W: longEdge, H: Math.round(longEdge / a) } : { W: Math.round(longEdge * a), H: longEdge }
-  }
-
-  private exportOps(W: number, H: number, rows: number, transparent: boolean) {
-    const g = buildGeometry(this.p, rows)
-    const frame = computeFrame(W, H, W / H, 1)
-    const cam = new Camera(this.rot, frame, this.p.zoom, this.p.perspective)
-    return { ops: buildOps(g, this.p, cam, frame, transparent), frame }
+  private exportFrame(longEdge: number) {
+    const a = aspectRatio(this.p.aspect)
+    const W = a >= 1 ? longEdge : Math.round(longEdge * a)
+    const H = a >= 1 ? Math.round(longEdge / a) : longEdge
+    return computeFrame(W, H, a, 1)
   }
 
   exportSVG(): string {
-    const { W, H } = this.exportDims(2000)
-    const { ops, frame } = this.exportOps(W, H, 900, this.p.transparent)
-    return toSVG(ops, frame)
+    if (!this.geom) return ""
+    const frame = this.exportFrame(2000)
+    return toSVG(buildOps(this.geom, this.p, frame, this.p.transparent), frame)
   }
 
   exportRaster(type: "image/png" | "image/jpeg"): Promise<Blob> {
     return new Promise((resolve, reject) => {
-      const { W, H } = this.exportDims(this.p.exportSize)
+      if (!this.geom) return reject(new Error("Nothing to export"))
+      const frame = this.exportFrame(this.p.exportSize)
       const c = document.createElement("canvas")
-      c.width = W
-      c.height = H
+      c.width = frame.w
+      c.height = frame.h
       const ctx = c.getContext("2d")
       if (!ctx) return reject(new Error("Canvas too large for this browser"))
       const transparent = type === "image/png" && this.p.transparent
-      const rows = Math.min(1100, Math.max(PREVIEW_ROWS, Math.round(H / 3.2)))
-      const { ops, frame } = this.exportOps(W, H, rows, transparent)
-      paintCanvas(ctx, ops, frame, transparent ? null : this.p.bg)
+      paintCanvas(ctx, buildOps(this.geom, this.p, frame, transparent), frame, transparent ? null : this.p.bg)
       c.toBlob((b) => (b ? resolve(b) : reject(new Error("Export failed — try a smaller size"))), type, 0.95)
     })
   }
 
-  // ---- internals ------------------------------------------------------------------------
+  // ---- internals ----------------------------------------------------------------------------
 
-  private rebuild(rows: number) {
-    this.geom = buildGeometry(this.p, rows)
-    this.draft = rows < PREVIEW_ROWS
-    this.stats.cells = this.geom.cells
-    this.stats.pores = this.geom.poreCount
-    this.stats.buildMs = this.geom.buildMs
-    this.onStats?.({ ...this.stats })
+  private rebuild() {
+    this.geom = buildGeometry({ ...this.p, lobes: this.lobes })
+    this.lastBuild = performance.now()
+    this.onStats?.({ cells: this.geom.stats.cells, bubbles: this.geom.stats.bubbles, buildMs: this.geom.stats.ms })
     this.dirty = true
+  }
+
+  /** while dragging, rebuild at most every ~90 ms */
+  private rebuildSoon() {
+    const wait = 90 - (performance.now() - this.lastBuild)
+    clearTimeout(this.pendingBuild)
+    if (wait <= 0) this.rebuild()
+    else this.pendingBuild = window.setTimeout(() => this.rebuild(), wait)
   }
 
   private resize() {
@@ -203,77 +136,117 @@ export class Engine {
     this.dirty = true
   }
 
-  private tick = (now: number) => {
-    const dt = Math.min(0.05, (now - (this.last || now)) / 1000)
-    this.last = now
-    if (this.p.autoRotate && !this.drag) {
-      // spin about the plate's own normal while the camera stays put, plus a slow wobble
-      this.rot = mul3(axisAngle3(0, 1, 0, this.p.rotateSpeed * dt), this.rot)
-      if (++this.ops % 64 === 0) orthonormalize3(this.rot)
-      this.dirty = true
-    }
+  private tick = () => {
     if (this.dirty) this.draw()
     this.raf = requestAnimationFrame(this.tick)
   }
 
   private draw() {
     if (!this.geom) return
-    const t0 = performance.now()
     const { width: w, height: h } = this.canvas
-    const aspect = this.p.aspect === "free" ? null : aspectRatio(this.p.aspect)
-    const frame: FrameBox = computeFrame(w, h, aspect)
-    const cam = new Camera(this.rot, frame, this.p.zoom, this.p.perspective)
-    const ops = buildOps(this.geom, this.p, cam, frame, false)
-    paintCanvas(this.ctx, ops, frame, aspect && this.p.showFrame ? "#141416" : this.p.bg)
-    if (aspect && this.p.showFrame) {
-      const { x, y, w: cw, h: ch } = frame.crop
-      this.ctx.strokeStyle = "rgba(255,255,255,0.28)"
-      this.ctx.lineWidth = this.dpr
-      this.ctx.strokeRect(x - 0.5, y - 0.5, cw + 1, ch + 1)
-    }
+    this.frame = computeFrame(w, h, aspectRatio(this.p.aspect))
+    paintCanvas(this.ctx, buildOps(this.geom, this.p, this.frame, false), this.frame, "#0c0c0e")
+    if (this.editing) this.drawLobes()
     this.dirty = false
-    const end = performance.now()
-    this.stats.drawMs = Math.round((end - t0) * 10) / 10
-    if (end - this.lastStatEmit > 600) { this.lastStatEmit = end; this.onStats?.({ ...this.stats }) }
-    void this.draft
+  }
+
+  private drawLobes() {
+    const v = viewFor(this.frame!)
+    const ctx = this.ctx
+    ctx.save()
+    ctx.lineWidth = 1.2 * this.dpr
+    this.lobes.forEach((l, i) => {
+      const x = v.ox + l.x * v.unit, y = v.oy + l.y * v.unit, r = l.r * v.unit
+      ctx.strokeStyle = i === this.hover || this.drag?.i === i ? "rgba(255,80,200,0.95)" : "rgba(255,80,200,0.55)"
+      ctx.setLineDash([6 * this.dpr, 5 * this.dpr])
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke()
+      ctx.setLineDash([])
+      ctx.fillStyle = "rgba(255,80,200,0.95)"
+      ctx.beginPath(); ctx.arc(x, y, 3.5 * this.dpr, 0, Math.PI * 2); ctx.fill()
+    })
+    ctx.restore()
+  }
+
+  private toPlate(e: PointerEvent | MouseEvent) {
+    const rect = this.canvas.getBoundingClientRect()
+    const v = viewFor(this.frame!)
+    const sx = (e.clientX - rect.left) * this.dpr, sy = (e.clientY - rect.top) * this.dpr
+    return { x: (sx - v.ox) / v.unit, y: (sy - v.oy) / v.unit, tol: (9 * this.dpr) / v.unit }
+  }
+
+  /** which lobe is under the pointer, and whether it's on its rim (resize) or inside (move) */
+  private hit(x: number, y: number, tol: number): { i: number; mode: "move" | "size" } | null {
+    let best: { i: number; mode: "move" | "size"; d: number } | null = null
+    this.lobes.forEach((l, i) => {
+      const d = Math.hypot(x - l.x, y - l.y)
+      if (Math.abs(d - l.r) < tol) {
+        if (!best || Math.abs(d - l.r) < best.d) best = { i, mode: "size", d: Math.abs(d - l.r) }
+      } else if (d < l.r && (!best || (best.mode === "move" && d < best.d))) {
+        best = { i, mode: "move", d }
+      }
+    })
+    return best
   }
 
   private onDown = (e: PointerEvent) => {
+    if (!this.editing || !this.frame || e.button !== 0) return
+    const { x, y, tol } = this.toPlate(e)
+    const h = this.hit(x, y, tol)
+    if (!h) return
+    if (e.altKey) { this.removeLobe(h.i); return }
     this.canvas.setPointerCapture(e.pointerId)
-    this.drag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: 0 }
+    const l = this.lobes[h.i]
+    this.drag = { id: e.pointerId, i: h.i, mode: h.mode, ox: x - l.x, oy: y - l.y }
   }
 
   private onMove = (e: PointerEvent) => {
+    if (!this.editing || !this.frame) return
+    const { x, y, tol } = this.toPlate(e)
     const d = this.drag
-    if (!d || d.id !== e.pointerId) return
-    const dx = e.clientX - d.x, dy = e.clientY - d.y
-    d.x = e.clientX; d.y = e.clientY
-    const len = Math.hypot(dx, dy)
-    if (!len) return
-    d.moved += len
-    if (d.moved < 3) return
-    if (e.shiftKey) {
-      // shift-drag: spin the plate in its own plane
-      this.rot = mul3(this.rot, axisAngle3(0, 0, 1, dx * 0.006))
-    } else {
-      // screen y is down, so dragging down tips the top edge away (rotation about -x)
-      this.rot = mul3(axisAngle3(-dy, dx, 0, len * 0.006), this.rot)
+    if (!d || d.id !== e.pointerId) {
+      const h = this.hit(x, y, tol)
+      const hv = h ? h.i : -1
+      this.canvas.style.cursor = h ? (h.mode === "size" ? "ew-resize" : "move") : "crosshair"
+      if (hv !== this.hover) { this.hover = hv; this.dirty = true }
+      return
     }
-    if (++this.ops % 32 === 0) orthonormalize3(this.rot)
+    const l = this.lobes[d.i]
+    if (d.mode === "move") { l.x = x - d.ox; l.y = y - d.oy }
+    else l.r = Math.max(0.04, Math.hypot(x - l.x, y - l.y))
     this.dirty = true
+    this.rebuildSoon()
   }
 
   private onUp = (e: PointerEvent) => {
-    if (this.drag?.id === e.pointerId) this.drag = null
+    if (!this.drag || this.drag.id !== e.pointerId) return
+    this.drag = null
+    this.commitLobes()
   }
 
-  private onDbl = () => this.resetView()
+  private onDbl = (e: MouseEvent) => {
+    if (!this.editing || !this.frame) return
+    const { x, y } = this.toPlate(e)
+    this.lobes.push({ x, y, r: 0.22 })
+    this.commitLobes()
+  }
 
-  private onWheel = (e: WheelEvent) => {
+  private onContext = (e: MouseEvent) => {
+    if (!this.editing || !this.frame) return
     e.preventDefault()
-    const z = Math.min(5, Math.max(0.3, this.p.zoom * Math.exp(-e.deltaY * 0.0012)))
-    this.p = { ...this.p, zoom: z }
-    this.dirty = true
-    this.onZoom?.(Math.round(z * 100) / 100)
+    const { x, y, tol } = this.toPlate(e)
+    const h = this.hit(x, y, tol)
+    if (h) this.removeLobe(h.i)
+  }
+
+  private removeLobe(i: number) {
+    if (this.lobes.length <= 1) return
+    this.lobes.splice(i, 1)
+    this.hover = -1
+    this.commitLobes()
+  }
+
+  private commitLobes() {
+    const r = (v: number) => Math.round(v * 1000) / 1000
+    this.onLobes?.(this.lobes.map((l) => ({ x: r(l.x), y: r(l.y), r: r(l.r) })))
   }
 }

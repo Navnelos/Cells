@@ -3,15 +3,12 @@ import { useCallback, useEffect, useRef } from "react"
 import type { Params } from "./params"
 
 // Undo/redo over settings. Rapid changes (a slider drag) settle into one step after
-// a short pause. Rotation on/off and zoom are view state, not edits, so they're skipped.
+// a short pause.
 
 const LIMIT = 150
 const SETTLE_MS = 350
 
-const key = (p: Params) => {
-  const { autoRotate: _a, zoom: _z, ...rest } = p
-  return JSON.stringify(rest)
-}
+const key = (p: Params) => JSON.stringify(p)
 
 export function useParamHistory(p: Params, setP: (p: Params) => void) {
   const past = useRef<Params[]>([])
@@ -37,9 +34,8 @@ export function useParamHistory(p: Params, setP: (p: Params) => void) {
   }, [p])
 
   const restore = (target: Params) => {
-    const cur = current.current
     restoring.current = true
-    setP({ ...target, autoRotate: cur.autoRotate, zoom: cur.zoom })
+    setP(target)
   }
 
   const undo = useCallback(() => {

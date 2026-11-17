@@ -1,18 +1,20 @@
 import { useEffect, useRef } from "react"
 
 import { Engine, type EngineStats } from "@/lib/engine"
-import type { Params } from "@/lib/params"
+import type { Lobe, Params } from "@/lib/params"
 
 export function Viewport({
   params,
+  editing,
   onReady,
   onStats,
-  onZoom,
+  onLobes,
 }: {
   params: Params
+  editing: boolean
   onReady: (e: Engine | null) => void
   onStats: (s: EngineStats) => void
-  onZoom: (z: number) => void
+  onLobes: (l: Lobe[]) => void
 }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const engine = useRef<Engine | null>(null)
@@ -32,18 +34,16 @@ export function Viewport({
   useEffect(() => {
     if (!engine.current) return
     engine.current.onStats = onStats
-    engine.current.onZoom = onZoom
+    engine.current.onLobes = onLobes
   })
 
   useEffect(() => {
     engine.current?.setParams(params)
   }, [params])
 
-  return (
-    <canvas
-      ref={ref}
-      className="absolute inset-0 block size-full cursor-grab touch-none active:cursor-grabbing"
-      aria-label="Cell map. Drag to rotate in 3D, shift-drag to spin, double-click to reset the view."
-    />
-  )
+  useEffect(() => {
+    engine.current?.setEditing(editing)
+  }, [editing])
+
+  return <canvas ref={ref} className="absolute inset-0 block size-full touch-none" aria-label="Cell foam illustration" />
 }
