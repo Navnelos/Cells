@@ -47,7 +47,6 @@ export interface Cell {
 export interface Geometry {
   flat: boolean
   outline: Float64Array // polygon, densely sampled
-  inner: Float64Array[] // the inner edge of the thin edge band (rings, even-odd)
   overTiles: Float64Array[] // lace fragments over empty cells
   overHoles: Curve[]
   cells: Cell[]
@@ -130,7 +129,7 @@ function simplifyPoly(q: LPoly): LPoly {
     const a = (k - 1 + m) % m, b = (k + 1) % m
     const ux = q.x[k] - q.x[a], uy = q.y[k] - q.y[a], vx = q.x[b] - q.x[k], vy = q.y[b] - q.y[k]
     const cr = Math.abs(ux * vy - uy * vx) / ((Math.hypot(ux, uy) * Math.hypot(vx, vy)) || 1)
-    if (cr > 0.24 || m - (k - o.x.length) <= 4) { o.x.push(q.x[k]); o.y.push(q.y[k]); o.lab.push(q.lab[k]) }
+    if (cr > 0.3 || m - (k - o.x.length) <= 4) { o.x.push(q.x[k]); o.y.push(q.y[k]); o.lab.push(q.lab[k]) }
   }
   return o.x.length >= 3 ? o : q
 }
@@ -292,6 +291,34 @@ export function buildGeometry(p: Params): Geometry {
     for (let i = 0; i < N; i++) if (cnt[i]) { sx[i] = ax[i] / cnt[i]; sy[i] = ay[i] / cnt[i] }
   }
 
+  // ---- outline, and the edge band: its thickness varies and drops to zero in places, where
+  // a dark cell itself becomes the edge
+  const rimAt = (x: number, y: number) => 0.075 * Math.max(0, Math.min(1.3, 0.12 + 1.25 * fbm(noise, x * 2.6 + 5, y * 2.6 - 2, 2)))
+  const oh = 2 / 700
+  const ox0 = ext.x0 - 0.05, oy0 = ext.y0 - 0.05
+  const onx = Math.ceil((ext.x1 - ext.x0 + 0.1) / oh), ony = Math.ceil((ext.y1 - ext.y0 + 0.1) / oh)
+  const vals = new Float64Array(onx * ony)
+  for (let j = 0; j < ony; j++) for (let i = 0; i < onx; i++) vals[j * onx + i] = -B(ox0 + (i + 0.5) * oh, oy0 + (j + 0.5) * oh)
+  const mp = contours().size([onx, ony]).contour(vals as unknown as number[], 0)
+  let outline = new Float64Array(0)
+  for (const poly of mp.coordinates) {
+    const ring = poly[0]
+    if (ring.length * 2 > outline.length) {
+      outline = new Float64Array((ring.length - 1) * 2)
+      for (let k = 0; k < ring.length - 1; k++) { outline[2 * k] = ox0 + ring[k][0] * oh; outline[2 * k + 1] = oy0 + ring[k][1] * oh }
+    }
+  }
+  // edge planes: tangent to the outline, pulled in by the band thickness there
+  const edgePlanes: [number, number, number, number, number][] = [] // nx ny c px py
+  for (let k = 0; k < outline.length / 2; k += 3) {
+    const x = outline[2 * k], y = outline[2 * k + 1]
+    const e = 1e-3
+    let gx = B(x + e, y) - B(x - e, y), gy = B(x, y + e) - B(x, y - e)
+    const gl = Math.hypot(gx, gy) || 1
+    gx /= gl; gy /= gl
+    edgePlanes.push([gx, gy, gx * x + gy * y - rimAt(x, y), x, y])
+  }
+
   // ---- power cells ---------------------------------------------------------------------
   const pad = 0.5
   const bx0 = ext.x0 - pad, by0 = ext.y0 - pad, bx1 = ext.x1 + pad, by1 = ext.y1 + pad
@@ -309,9 +336,17 @@ export function buildGeometry(p: Params): Geometry {
       q = clip(q, nx, ny, c, j)
       pl.set(j, [nx, ny, c])
     }
+    // close the cell against the outline (only tangents near this cell matter)
+    const pre = q
+    edgePlanes.forEach(([nx, ny, c, ex, ey], k) => {
+      if (pre.x.length >= 3 && sdConvex(ex, ey, pre.x, pre.y) < 0.04) {
+        q = clip(q, nx, ny, c, -2 - k)
+        pl.set(-2 - k, [nx, ny, c])
+      }
+    })
     // keep only the walls that survived
     const used = new Map<number, [number, number, number]>()
-    for (const l of q.lab) if (l >= 0) used.set(l, pl.get(l)!)
+    for (const l of q.lab) if (l >= 0 || l <= -2) used.set(l, pl.get(l)!)
     planes.push(used)
     base.push(q)
   }
@@ -328,6 +363,7 @@ export function buildGeometry(p: Params): Geometry {
     }
   }
   const bowFor = (i: number) => (l: number): [number, number] => {
+    if (l <= -2) { const e = edgePlanes[-2 - l]; return [e[0] * 0.01, e[1] * 0.01] }
     if (l < 0) return [0, 0]
     const len = wallLen.get(i < l ? `${i}:${l}` : `${l}:${i}`) ?? 0
     const pl = planes[i].get(l)
@@ -354,8 +390,8 @@ export function buildGeometry(p: Params): Geometry {
   // cells that reach the outline are always foam (the edge is never an empty hole)
   for (let k = 0; k < Math.round(order.length * filledFrac); k++) filled[order[k]] = true
   // a few empty cells carry fragments of white lace
-  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.3)
-  const shrinkOf = sx.map((_, i) => (!giant[i] && rng() < p.spacing * Math.max(0, 1.5 - 1.6 * cellDepth[i]) ? 0.12 + rng() * 0.3 : 0))
+  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.5)
+  const shrinkOf = sx.map((_, i) => (!giant[i] && rng() < (Math.hypot(sx[i] - hub[0], sy[i] - hub[1]) < 0.3 ? 0.7 : p.spacing * (cellDepth[i] < 0.2 ? 1.1 : cellDepth[i] < 0.6 ? 0.25 : 0.7)) ? 0.12 + rng() * 0.3 : 0))
 
   const cells: Cell[] = []
   const sharp: LPoly[] = []
@@ -378,12 +414,12 @@ export function buildGeometry(p: Params): Geometry {
     // some cells shrink away from their neighbours, leaving room for foam around them
     const shrink = shrinkOf[i] * inr
     const pq = shrink > 0 ? insetPoly(i, halfGap + shrink) : q
-    const pore = pq.x.length >= 3 ? roundedCurve(pq, bow, fillet * (1 + shrinkOf[i])) : null
+    const pore = pq.x.length >= 3 ? roundedCurve(simplifyPoly(pq), bow, fillet * (1 + shrinkOf[i])) : null
     poreQ.push(pq)
     const fans: Curve[] = []
     for (let f = 1; f <= (shrink > 0 ? 0 : FANS); f++) {
       const s = f / (FANS + 1)
-      const c = roundedCurve(insetPoly(i, halfGap * s), bow, fillet * s * s)
+      const c = roundedCurve(simplifyPoly(insetPoly(i, halfGap * s)), bow, fillet * s * s)
       if (c) fans.push(c)
     }
     const dh = Math.hypot(sx[i] - hub[0], sy[i] - hub[1])
@@ -408,7 +444,7 @@ export function buildGeometry(p: Params): Geometry {
     const y = ext.y0 - 0.1 + prng() * (ext.y1 - ext.y0 + 0.2)
     const dep = Math.max(0, -B(x, y)) / (maxDepth || 1)
     // lace prefers the inside, colour prefers the edge
-    const ww = [wts[0] * (1.25 - 0.6 * dep), wts[1] * (1 - 0.4 * dep), wts[2] * (0.9 - 0.5 * dep), wts[3] * (0.3 + 0.9 * dep), 0.25 + 1.3 * dep]
+    const ww = [wts[0] * (1.25 - 0.6 * dep), wts[1] * (1 - 0.4 * dep), wts[2] * (0.9 - 0.5 * dep), wts[3] * (0.3 + 0.9 * dep), 0.3 + 0.55 * dep]
       .map((v) => Math.max(0, v))
     const sum = ww.reduce((a, b) => a + b, 0)
     let st = -1
@@ -473,7 +509,6 @@ export function buildGeometry(p: Params): Geometry {
     return true
   }
   // the thin edge band: where the outline is within `rim` (noisy) of the point
-  const rimAt = (x: number, y: number) => 0.042 * Math.max(0.25, 1 + 1.1 * noise(x * 3.1 + 5, y * 3.1 - 2))
   const inBand = (x: number, y: number) => B(x, y) > -rimAt(x, y)
   let fails = 0
   const over: boolean[] = [] // lace fragments drawn over empty cells
@@ -493,13 +528,16 @@ export function buildGeometry(p: Params): Geometry {
     const o = owner(x, y)
     const q = poreQ[o]
     const inside = q.x.length >= 3 && sdConvex(x, y, q.x, q.y) < -r * 0.3
-    if (!inside && st < 0 && shrinkOf[o] > 0) st = pi % 2 // gaps around cells that sit apart are always foam
+    if (!inside && st < 0 && (shrinkOf[o] > 0 || B(x, y) > -0.12)) st = pi % 2 // gaps around cells that sit apart, and by the edge, are foam
+    // the hub: the junctions around the centre carry lime foam
+    if (!inside && Math.hypot(x - hub[0], y - hub[1]) < 0.17 * (1 + 0.4 * noise(x * 6, y * 6)) * Math.sqrt(area / 2)) st = pi % 3 === 2 ? 1 : 0
     if (st < 0) continue
     let isOver = false
     if (inside && !band && !filled[o]) {
       // deep in an empty cell: only lace fragments, and only in some cells
       if (!laceCell[o] || noise(x * 9 + 3, y * 9) < 0.15) continue
       isOver = true
+      r *= 0.7
     }
     if (!free(x, y, r)) continue
     fails = 0
@@ -583,7 +621,7 @@ export function buildGeometry(p: Params): Geometry {
     if (isOver) {
       if (flat) continue
       overTiles.push(flatTile)
-      const hq = cellOf(halfWall * 0.7)
+      const hq = cellOf(halfWall * 0.45)
       if (hq.x.length >= 3) { const c = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, -sdConvex(x, y, hq.x, hq.y)) * 0.6); if (c) overHoles.push(c) }
       continue
     }
@@ -621,33 +659,6 @@ export function buildGeometry(p: Params): Geometry {
     }
   }
 
-  // ---- outline polygon and edge ticks -------------------------------------------------------
-  const oh = 2 / 700
-  const ox0 = ext.x0 - 0.05, oy0 = ext.y0 - 0.05
-  const onx = Math.ceil((ext.x1 - ext.x0 + 0.1) / oh), ony = Math.ceil((ext.y1 - ext.y0 + 0.1) / oh)
-  const vals = new Float64Array(onx * ony)
-  for (let j = 0; j < ony; j++) for (let i = 0; i < onx; i++) vals[j * onx + i] = -B(ox0 + (i + 0.5) * oh, oy0 + (j + 0.5) * oh)
-  const mp = contours().size([onx, ony]).contour(vals as unknown as number[], 0)
-  const ivals = new Float64Array(onx * ony)
-  for (let j = 0; j < ony; j++) for (let i = 0; i < onx; i++) {
-    const x = ox0 + (i + 0.5) * oh, y = oy0 + (j + 0.5) * oh
-    ivals[j * onx + i] = vals[j * onx + i] - rimAt(x, y)
-  }
-  const imp = contours().size([onx, ony]).contour(ivals as unknown as number[], 0)
-  const inner: Float64Array[] = []
-  for (const poly of imp.coordinates) for (const ring of poly) {
-    const f = new Float64Array((ring.length - 1) * 2)
-    for (let k = 0; k < ring.length - 1; k++) { f[2 * k] = ox0 + ring[k][0] * oh; f[2 * k + 1] = oy0 + ring[k][1] * oh }
-    inner.push(f)
-  }
-  let outline = new Float64Array(0)
-  for (const poly of mp.coordinates) {
-    const ring = poly[0]
-    if (ring.length * 2 > outline.length) {
-      outline = new Float64Array((ring.length - 1) * 2)
-      for (let k = 0; k < ring.length - 1; k++) { outline[2 * k] = ox0 + ring[k][0] * oh; outline[2 * k + 1] = oy0 + ring[k][1] * oh }
-    }
-  }
   const ticks: number[] = []
   const trng = mulberry32(p.seed * 5 + 9)
   {
@@ -671,7 +682,7 @@ export function buildGeometry(p: Params): Geometry {
   }
 
   return {
-    flat, outline, inner, cells, overTiles, overHoles,
+    flat, outline, cells, overTiles, overHoles,
     tiles, holes, holesMid,
     dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: Float64Array.from(ticks),
     hub, extent: ext,

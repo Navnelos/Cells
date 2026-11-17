@@ -104,12 +104,11 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     ops.push({ k: "curves", c: cell.fans, stroke: mix(p.strand, p.hub, t), width: 0.42 * px, alpha: Math.min(0.85, 0.22 + 0.4 * t) })
   }
 
+  ops.push({ k: "unclip" }) // outline: foam and edge cells may break past it
   const pores = g.cells.map((cl) => cl.pore).filter((x): x is Curve => !!x)
   const emptyPores = g.cells.filter((cl) => cl.pore && !cl.filled).map((cl) => cl.pore!) as Curve[]
   // all cells dark (inside the edge band)
-  ops.push({ k: "clipRings", r: g.inner })
   ops.push({ k: "curves", c: pores, fill: p.bg })
-  ops.push({ k: "unclip" })
 
   // foam: between cells, along the edge band, and in the cells that carry it
   const colors: Record<(typeof STYLES)[number], string> = { lime: p.lime, green: p.green, blue: p.blue, lace: p.lace }
@@ -125,11 +124,10 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   }
 
   // empty cells cut back to dark, then lace fragments and faint hatching inside some of them
-  ops.push({ k: "clipRings", r: g.inner })
   ops.push({ k: "curves", c: emptyPores, fill: p.bg })
   ops.push({ k: "clipCurves", c: emptyPores })
   if (g.overTiles.length) {
-    ops.push({ k: "polys", p: g.overTiles, fill: p.lace, alpha: 0.78 })
+    ops.push({ k: "polys", p: g.overTiles, fill: p.lace, alpha: 0.95 })
     ops.push({ k: "curves", c: g.overHoles, fill: p.bg })
   }
   if (p.hatching) {
@@ -156,7 +154,6 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (3.2 + 2 * t) * px, alpha: 0.08 + 0.12 * t })
     ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (1 + 0.7 * t) * px, alpha: 0.95 })
   }
-  ops.push({ k: "unclip" }) // inner
 
   if (p.dots) {
     if (g.dots.length) ops.push({ k: "discs", d: g.dots, fill: p.lace })
@@ -165,7 +162,6 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
       ops.push({ k: "discs", d: scaleR(g.rings, 0.32), fill: p.lace })
     }
   }
-  ops.push({ k: "unclip" }) // outline
   ops.push({ k: "unclip" }) // frame
   return ops
 }
