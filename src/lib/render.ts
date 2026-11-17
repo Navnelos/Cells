@@ -95,7 +95,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   // ---- the shape -------------------------------------------------------------------------
   ops.push({ k: "clipPoly", p: g.outline })
   // junction webs: a dark, slightly tinted base under everything
-  ops.push({ k: "poly", p: g.outline, fill: mix(mix(p.bg, p.blue, 0.1), p.strand, 0.04) })
+  ops.push({ k: "poly", p: g.outline, fill: mix(p.bg, p.blue, 0.05) })
   if (p.glow > 0) ops.push({ k: "radial", x: g.hub[0], y: g.hub[1], r: 0.45, color: p.hub, alpha: 0.4 * p.glow })
 
   // junction webs: a soft lime haze of very fine lines converging on the walls
@@ -130,7 +130,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   // empty cells cut back to dark, then lace fragments and faint hatching inside some of them
   ops.push({ k: "curves", c: emptyPores, fill: p.bg })
   ops.push({ k: "clipCurves", c: emptyPores })
-  if (g.lace.length) ops.push({ k: "discs", d: g.lace, stroke: p.lace, width: 0.85 * px, alpha: 0.9 })
+  if (g.lace.length) ops.push({ k: "curves", c: g.lace, stroke: p.lace, width: 0.9 * px, alpha: 0.92 })
   if (p.hatching) {
     for (const cell of g.cells) {
       const h = cell.hatch
@@ -155,12 +155,6 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     const col = mix(p.strand, p.hub, t)
     ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (3.2 + 2 * t) * px, alpha: 0.08 + 0.12 * t })
     ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (1 + 0.7 * t) * px, alpha: 0.95 })
-  }
-
-  // the thin stretches of the edge: a fine strand along the outline
-  if (g.edgeLines.length) {
-    ops.push({ k: "polyline", p: g.edgeLines, stroke: p.strand, width: p.strandWidth * 3 * px, alpha: 0.08 })
-    ops.push({ k: "polyline", p: g.edgeLines, stroke: p.strand, width: p.strandWidth * 0.85 * px, alpha: 0.9 })
   }
 
   if (p.dots) {

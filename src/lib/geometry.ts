@@ -50,7 +50,7 @@ export interface Geometry {
   edgeLines: Float64Array[] // stretches of the outline drawn as a thin strand
   overTiles: Float64Array[] // lace fragments over empty cells
   overHoles: Curve[]
-  lace: Float64Array // x y r: white lace circles
+  lace: Curve[] // white lace: uneven round outlines
   cells: Cell[]
   tiles: Record<Style, Float64Array[][]> // per style, three tones of polygons
   holes: Record<Style, Curve[]>
@@ -295,7 +295,7 @@ export function buildGeometry(p: Params): Geometry {
 
   // ---- outline, and the edge band: its thickness varies and drops to zero in places, where
   // a dark cell itself becomes the edge
-  const rimAt = (x: number, y: number) => 0.075 * Math.max(0, Math.min(1.3, 0.12 + 1.25 * fbm(noise, x * 2.6 + 5, y * 2.6 - 2, 2)))
+  const rimAt = (x: number, y: number) => 0.1 * Math.max(0, Math.min(1.2, -0.2 + 1.9 * fbm(noise, x * 2.4 + 5, y * 2.4 - 2, 2)))
   const oh = 2 / 700
   const ox0 = ext.x0 - 0.05, oy0 = ext.y0 - 0.05
   const onx = Math.ceil((ext.x1 - ext.x0 + 0.1) / oh), ony = Math.ceil((ext.y1 - ext.y0 + 0.1) / oh)
@@ -404,7 +404,7 @@ export function buildGeometry(p: Params): Geometry {
   // cells that reach the outline are always foam (the edge is never an empty hole)
   for (let k = 0; k < Math.round(order.length * filledFrac); k++) filled[order[k]] = true
   // a few empty cells carry fragments of white lace
-  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.35)
+  const laceCell = sx.map((_, i) => !filled[i] && rng() < 0.55)
   const shrinkOf = sx.map((_, i) => (!giant[i] && rng() < (Math.hypot(sx[i] - hub[0], sy[i] - hub[1]) < 0.3 ? 0.7 : p.spacing * (cellDepth[i] < 0.2 ? 1.1 : cellDepth[i] < 0.6 ? 0.25 : 0.7)) ? 0.12 + rng() * 0.3 : 0))
 
   const cells: Cell[] = []
@@ -538,22 +538,22 @@ export function buildGeometry(p: Params): Geometry {
     const band = inBand(x, y)
     const pi = styleAt(x, y)
     let st = pst[pi]
-    if (band) st = rimAt(x, y) > 0.034 ? (st >= 0 && st < 3 ? st : pi % 2) : 3 // thick band: colour; thin band: lace inside a line
+    if (band) st = rimAt(x, y) > 0.03 ? (st >= 0 && st < 3 ? st : pi % 2) : 3 // thick band: colour; thin band: lace
     const o = owner(x, y)
     const q = poreQ[o]
     const inside = q.x.length >= 3 && sdConvex(x, y, q.x, q.y) < -r * 0.3
-    if (!inside && st < 0 && (shrinkOf[o] > 0 || B(x, y) > -0.12)) st = pi % 2 // gaps around cells that sit apart, and by the edge, are foam
+    if (!inside && st < 0 && shrinkOf[o] > 0) st = pi % 2 // gaps around cells that sit apart, and by the edge, are foam
     // the hub: the junctions around the centre carry lime foam
     if (!inside && Math.hypot(x - hub[0], y - hub[1]) < 0.17 * (1 + 0.4 * noise(x * 6, y * 6)) * Math.sqrt(area / 2)) st = pi % 3 === 2 ? 1 : 0
     if (st < 0) continue
     let isOver = false
     if (inside && !band && !filled[o]) {
       // deep in an empty cell: only lace fragments, and only in some cells
-      if (!laceCell[o] || sdConvex(x, y, q.x, q.y) < -0.04 - 0.045 * noise(x * 7 + 3, y * 7)) continue
+      if (!laceCell[o] || noise(x * 4.5 + 11, y * 4.5) < 0.05 || sdConvex(x, y, q.x, q.y) < -0.06 - 0.06 * noise(x * 7 + 3, y * 7)) continue
       isOver = true
-      r *= 1.1 + 1.2 * brng() * brng()
+      r *= 0.8 + 2.4 * brng() * brng() * brng()
     }
-    if (st === 3 && !isOver) r *= 1.1 + 1.0 * brng() * brng()
+    if (st === 3 && !isOver) r *= 0.8 + 2.4 * brng() * brng() * brng()
     if (!free(x, y, r)) continue
     fails = 0
     const k = discs.length
@@ -578,7 +578,7 @@ export function buildGeometry(p: Params): Geometry {
   const holes: Record<Style, Curve[]> = { lime: [], green: [], blue: [], lace: [] }
   const holesMid: Record<Style, Curve[]> = { lime: [], green: [], blue: [], lace: [] }
   const overTiles: Float64Array[] = [], overHoles: Curve[] = []
-  const laceCircles: number[] = []
+  const laceShapes: Curve[] = []
   let bubbles = 0
   const circleCurve = (x: number, y: number, r: number): Curve => {
     const kk = 0.5523 * r
@@ -634,17 +634,19 @@ export function buildGeometry(p: Params): Geometry {
     if (tile.x.length < 3) continue
     const flatTile = new Float64Array(tile.x.length * 2)
     for (let t = 0; t < tile.x.length; t++) { flatTile[2 * t] = tile.x[t]; flatTile[2 * t + 1] = tile.y[t] }
-    if (isOver) {
-      if (flat) continue
-      laceCircles.push(x, y, r * (0.97 + 0.03 * brng()))
-      continue
+    if (isOver || name === "lace") {
+      if (flat && isOver) continue
+      if (!flat) {
+        const hq = cellOf(halfWall * 0.3)
+        if (hq.x.length >= 3) {
+          const c = roundedCurve(simplifyPoly(hq), () => [0, 0], Math.max(0, -sdConvex(x, y, hq.x, hq.y)) * 0.9)
+          if (c) laceShapes.push(c)
+        }
+        continue
+      }
     }
     // lace: thin line circles only (no fill)
-    if (name === "lace") {
-      if (!flat) laceCircles.push(x, y, r * (0.97 + 0.03 * brng()))
-      else tiles[name][tone].push(flatTile)
-      continue
-    }
+    if (name === "lace") { tiles[name][tone].push(flatTile); continue }
     tiles[name][tone].push(flatTile)
     if (flat) continue
     if (name === "green") {
@@ -710,7 +712,7 @@ export function buildGeometry(p: Params): Geometry {
   }
 
   return {
-    flat, outline, edgeLines, cells, overTiles, overHoles, lace: Float64Array.from(laceCircles),
+    flat, outline, edgeLines, cells, overTiles, overHoles, lace: laceShapes,
     tiles, holes, holesMid,
     dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: Float64Array.from(ticks),
     hub, extent: ext,
