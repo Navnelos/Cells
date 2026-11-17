@@ -89,16 +89,16 @@ export function ControlPanel({
         </Section>
 
         <Section title="Cells">
-          <SliderField label="Number of cells" value={p.cells} min={15} max={160} step={1} onChange={(v) => set({ cells: v })} />
+          <SliderField label="Large cavities" value={p.cells} min={10} max={120} step={1} onChange={(v) => set({ cells: v })} hint="Roughly how many big dark bubbles" />
           <SliderField label="Giant bubbles" value={p.giants} min={0} max={20} step={1} onChange={(v) => set({ giants: v })} />
           <SliderField label="Giant size" value={p.giantSize} min={1} max={3.5} onChange={(v) => set({ giantSize: v })} />
           <SliderField label="Size variety" value={p.variety} min={0} max={1.2} onChange={(v) => set({ variety: v })} />
-          <SliderField label="Cells apart" value={p.spacing} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set({ spacing: v })} hint="Share of cells that sit apart from their neighbours, with foam between" />
+          <SliderField label="Nesting" value={p.spacing} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set({ spacing: v })} hint="Clusters of smaller bubbles nested between the large cavities" />
         </Section>
 
         <Section title="Strands">
           <SliderField label="Thickness" value={p.strandWidth} min={0.3} max={5} step={0.1} onChange={(v) => set({ strandWidth: v })} />
-          <SliderField label="Junction webs" value={p.webs} min={0} max={1.5} onChange={(v) => set({ webs: v })} hint="Size of the fanned webs where strands meet" />
+          <SliderField label="Junction webs" value={p.webs} min={0} max={2} onChange={(v) => set({ webs: v })} hint="How far the fine web lines reach into the gaps between bubbles" />
           <SliderField label="Centre glow" value={p.glow} min={0} max={1.5} onChange={(v) => set({ glow: v })} />
         </Section>
 
@@ -111,7 +111,7 @@ export function ControlPanel({
               { value: "flat", label: "Flat colour" },
             ]}
           />
-          <SliderField label="Filled area" value={p.foamAmount} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set({ foamAmount: v })} hint="Share of inner cells that are filled; the edge ring is always filled" />
+          <SliderField label="Foam depth" value={p.foamAmount} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => set({ foamAmount: v })} hint="How far the fine foam reaches in from the edge" />
           <SliderField label="Bubble size" value={p.bubbleSize} min={0.3} max={2.5} onChange={(v) => set({ bubbleSize: v })} />
           <SliderField label="Open bubbles" value={p.holes} min={0} max={1} format={(v) => `${Math.round(v * 100)}%`} disabled={!foam} onChange={(v) => set({ holes: v })} />
           <div className="space-y-3 pt-1">
@@ -138,7 +138,6 @@ export function ControlPanel({
           <SwitchField label="Grid" checked={p.grid} onChange={(v) => set({ grid: v })} />
           <SwitchField label="Edge ticks" checked={p.ticks} onChange={(v) => set({ ticks: v })} />
           <SwitchField label="Junction dots" checked={p.dots} onChange={(v) => set({ dots: v })} />
-          <SwitchField label="Hatching" checked={p.hatching} onChange={(v) => set({ hatching: v })} />
         </Section>
 
         <Section title="Export">

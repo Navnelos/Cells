@@ -92,69 +92,41 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
 
   if (p.ticks && g.ticks.length) ops.push({ k: "lines", s: g.ticks, stroke: p.lace, width: 0.9 * px, alpha: 0.32 })
 
-  // ---- the shape -------------------------------------------------------------------------
+  // ---- the shape ---------------------------------------------------------------------------
   ops.push({ k: "clipPoly", p: g.outline })
-  // junction webs: a dark, slightly tinted base under everything
-  ops.push({ k: "poly", p: g.outline, fill: mix(p.bg, p.blue, 0.05) })
-  if (p.glow > 0) ops.push({ k: "radial", x: g.hub[0], y: g.hub[1], r: 0.45, color: p.hub, alpha: 0.4 * p.glow })
+  ops.push({ k: "poly", p: g.outline, fill: mix(p.bg, p.green, 0.05) })
+  if (p.glow > 0) ops.push({ k: "radial", x: g.hub[0], y: g.hub[1], r: 0.45, color: p.hub, alpha: 0.35 * p.glow })
 
-  // junction webs: a soft lime haze of very fine lines converging on the walls
-  for (const cell of g.cells) {
-    if (!cell.fans.length) continue
-    const t = Math.min(1, p.glow * cell.hub)
-    ops.push({ k: "curves", c: cell.fans, stroke: mix(p.strand, p.hub, t), width: 0.42 * px, alpha: Math.min(0.85, 0.22 + 0.4 * t) })
+  // fanned junction webs of the cavities
+  for (const c of g.cavities) {
+    const t = Math.min(1, p.glow * c.hub)
+    ops.push({ k: "curves", c: c.fans, stroke: mix(p.strand, p.hub, t), width: 0.42 * px, alpha: Math.min(0.85, 0.22 + 0.4 * t) })
   }
 
-  const pores = g.cells.map((cl) => cl.pore).filter((x): x is Curve => !!x)
-  const emptyPores = g.cells.filter((cl) => cl.pore && !cl.filled).map((cl) => cl.pore!) as Curve[]
-  // all cells dark (inside the edge band)
-  ops.push({ k: "curves", c: pores, fill: p.bg })
-
-  // foam: translucent colour fills, darker holes, and fine lighter walls drawn as lines
+  // foam: coloured walls, dark holes; white lace is white walls with dark holes
   const colors: Record<(typeof STYLES)[number], string> = { lime: p.lime, green: p.green, blue: p.blue, lace: p.lace }
   for (const s of STYLES) {
-    if (s === "lace" && !g.flat) continue
-    const base = s === "lace" ? mix(p.green, p.bg, 0.55) : colors[s]
-    // lime areas come in three tones: light green, lime, yellow-lime
-    const tones = s === "lime" ? [p.green, base, mix(base, p.green, 0.45)] : s === "green" ? [mix(base, p.bg, 0.25), mix(base, p.bg, 0.1), base] : [mix(base, p.bg, 0.1), base, mix(base, "#ffffff", 0.12)]
+    const base = colors[s]
+    const tones = s === "lime" ? [p.green, base, mix(base, p.green, 0.45)]
+      : s === "green" ? [mix(base, p.bg, 0.3), mix(base, p.bg, 0.12), base]
+      : [mix(base, p.bg, 0.1), base, mix(base, "#ffffff", 0.12)]
     g.tiles[s].forEach((polys, i) => {
-      if (polys.length) ops.push({ k: "polys", p: polys, fill: tones[i] })
+      if (polys.length) ops.push({ k: "polys", p: polys, fill: tones[i], alpha: s === "lace" ? 0.9 : 1 })
     })
-    if (g.holes[s].length) {
-      ops.push({ k: "curves", c: g.holes[s], fill: mix(colors[s], p.bg, s === "green" ? 0.82 : 0.7) })
-    }
-    if (g.holesMid[s].length) ops.push({ k: "curves", c: g.holesMid[s], fill: mix(colors[s], p.bg, 0.5), alpha: 0.85 })
+    const hole = s === "lace" ? p.bg : mix(base, p.bg, s === "green" ? 0.84 : 0.72)
+    if (g.holes[s].length) ops.push({ k: "curves", c: g.holes[s], fill: hole })
+    if (g.holesMid[s].length) ops.push({ k: "curves", c: g.holesMid[s], fill: mix(base, p.bg, 0.5) })
   }
 
-
-  // empty cells cut back to dark, then lace fragments and faint hatching inside some of them
-  ops.push({ k: "curves", c: emptyPores, fill: p.bg })
-  ops.push({ k: "clipCurves", c: emptyPores })
-  if (g.lace.length) ops.push({ k: "curves", c: g.lace, stroke: p.lace, width: 0.9 * px, alpha: 0.92 })
-  if (p.hatching) {
-    for (const cell of g.cells) {
-      const h = cell.hatch
-      if (!h) continue
-      const segs: number[] = []
-      const ca = Math.cos(h.angle), sa = Math.sin(h.angle)
-      for (let o = -h.r; o <= h.r; o += h.spacing) {
-        const half = Math.sqrt(Math.max(0, h.r * h.r - o * o)) * 1.6
-        const mx = h.cx - sa * o, my = h.cy + ca * o
-        segs.push(mx - ca * half, my - sa * half, mx + ca * half, my + sa * half)
-      }
-      ops.push({ k: "lines", s: Float64Array.from(segs), stroke: h.lace ? p.lace : p.strand, width: 0.5 * px, alpha: 0.16 })
-    }
-  }
-  ops.push({ k: "unclip" })
-
-  ops.push({ k: "unclip" }) // outline
-  // strands: a soft glow pass, then the thin line; brighter towards the hub (stop at the edge band)
-  for (const cell of g.cells) {
-    if (!cell.pore) continue
-    const t = Math.min(1, p.glow * cell.hub)
+  // cavities: dark, with a thin strand whose weight follows the cell's size
+  const pores = g.cavities.map((c) => c.pore)
+  ops.push({ k: "curves", c: pores, fill: p.bg })
+  for (const c of g.cavities) {
+    const t = Math.min(1, p.glow * c.hub)
     const col = mix(p.strand, p.hub, t)
-    ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (3.2 + 2 * t) * px, alpha: 0.08 + 0.12 * t })
-    ops.push({ k: "curves", c: [cell.pore], stroke: col, width: p.strandWidth * (1 + 0.7 * t) * px, alpha: 0.95 })
+    const w = p.strandWidth * (0.55 + 0.6 * Math.sqrt(c.size)) * (1 + 0.6 * t)
+    ops.push({ k: "curves", c: [c.pore], stroke: col, width: w * 3.2 * px, alpha: 0.07 + 0.12 * t })
+    ops.push({ k: "curves", c: [c.pore], stroke: col, width: w * px, alpha: 0.95 })
   }
 
   if (p.dots) {
@@ -164,6 +136,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
       ops.push({ k: "discs", d: scaleR(g.rings, 0.32), fill: p.lace })
     }
   }
+  ops.push({ k: "unclip" }) // outline
   ops.push({ k: "unclip" }) // frame
   return ops
 }

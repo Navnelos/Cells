@@ -5,20 +5,15 @@ fanned junction webs, and a ring of micro-foam (lime, green, blue, white lace) i
 
 ## How it's made
 
-Everything is exact vector geometry. Nothing is traced from a grid, so edges stay smooth at any size.
-
-- **Outline:** a smooth union of circles. Edit them on the canvas with **Edit shape** (or the E key):
-  drag inside a circle to move it, drag its edge to resize, double-click to add one, right-click to
-  remove one.
-- **Cells:** a power diagram (a weighted Voronoi diagram with exactly computed walls) of seeds placed
-  by Poisson darts and relaxed with Lloyd's algorithm. Giant bubbles are seeds with a large weight,
-  and cells get smaller toward the edge. Each wall bows into the smaller of its two cells.
-- **Strands:** every hole is its cell inset by half the wall, with corners rounded by circular-arc
-  Béziers. The junction webs repeat that construction at smaller insets and fillets, so the fine
-  lines converge on the walls and fan out at the corners. Strands brighten toward the centre.
-- **Foam:** variable-radius circle packing inside the filled cells, coloured by a domain-warped patch
-  mosaic. Cells that reach the outline are always filled. **Flat colour** mode replaces the bubbles
-  with solid fills.
+- **Outline:** a smooth union of circles. Edit them on the canvas with **Edit shape** (or E).
+- **Bubbles:** circle packing. Bubbles of very mixed sizes are placed by a size field (large
+  cavities inside, shrinking to fine foam toward the edge, with nested clusters between), then
+  inflated until they press against their neighbours. Each bubble is round and flattens only
+  where it touches another, so the gaps at the junctions are small concave triangles.
+- **Strands and webs:** each large bubble is outlined by a thin strand. The web lines are the same
+  bubble grown step by step into the gaps around it, so they fan out at the junctions.
+- **Foam:** small bubbles are drawn as coloured walls with dark holes (lime, green, blue), medium
+  ones partly as white lace. **Flat colour** mode fills them solid.
 
 **Keys:** R gives a new seed, E toggles shape editing, ⌘Z / ⇧⌘Z undo and redo. Export to SVG, PNG or JPEG.
 
