@@ -43,7 +43,8 @@ export interface Geometry {
   holesMid: Record<Style, Curve[]>
   dots: Float64Array // x y r
   rings: Float64Array // x y r
-  ticks: Float64Array // segments x0 y0 x1 y1
+  ticks: Float64Array[] // segments x0 y0 x1 y1, three visibility levels
+  particles: Float64Array // x y r, tiny fragments beyond the edge
   hub: [number, number]
   extent: { x0: number; y0: number; x1: number; y1: number }
   stats: { cells: number; bubbles: number; ms: number }
@@ -221,8 +222,8 @@ export function buildGeometry(p: Params): Geometry {
   const sizeAt = (x: number, y: number) => {
     const d = Math.max(0, -B(x, y)) / maxDepth
     // the dense zone's depth wanders along the edge: thick in places, nearly gone in others
-    const z = zone * Math.max(0.12, 1 + 1.1 * fbm(noise, x * 2.3 + 5, y * 2.3 - 2, 2))
-    const s = smooth(0, z, d)
+    const z = zone * Math.max(0.05, 1 + 1.5 * fbm(noise, x * 2.3 + 5, y * 2.3 - 2, 2))
+    const s = smooth(0.15, 0.85, smooth(0, z, d))
     // nested clusters of smaller cells between the cavities
     const c = Math.min(1, Math.max(0, p.spacing) * 1.6 * smooth(0.0, 0.4, noise(x * 3.4 + 9, y * 3.4 - 4)))
     return Rmin * Math.exp(ratio * s * (1 - 0.85 * c))
@@ -269,8 +270,17 @@ export function buildGeometry(p: Params): Geometry {
       const b = B(x, y)
       let r = sizeAt(x, y) * Math.exp(Math.max(0, p.variety) * 1.1 * (rng() + rng() - 1))
       if (r / Rmax < pass) continue
-      if (b > r * 0.35) continue
+      // calm pockets: medium bubbles instead of fine foam in places
+      if (r < 0.2 * Rmax && b < -0.08 && noise(x * 2.7 + 40, y * 2.7 - 13) > 0.3) r *= 3
+      // near the edge a bubble shrinks to fit, so the outermost bubbles form the boundary
+      if (b > -r * 0.7) r = Math.min(r, Math.max(Rmin * 0.6, -b / 0.7))
       r = Math.max(Rmin * 0.6, r)
+      if (b > -r * 0.15) {
+        // a few detached fragments just outside; otherwise stay inside
+        if (b > 0.025 || rng() > 0.04) continue
+      }
+      // subtle erosion of the finest edge foam
+      if (b > -0.03 && r < 2 * Rmin && noise(x * 13 + 3, y * 13 - 8) < -0.4) continue
       if (!fits(x, y, r)) continue
       add(x, y, r)
       fails = 0
@@ -333,16 +343,18 @@ export function buildGeometry(p: Params): Geometry {
     return planes
   }
   const CIRC = 40
-  const polyOf = (x: number, y: number, R: number, planes: number[], g: number, circle = 0): LPoly => {
+  const polyOf = (x: number, y: number, R: number, planes: number[], g: number, circle = 0, asp = 1, ang = 0): LPoly => {
     const big = R * 1.2
     let q: LPoly = { x: [x - big, x + big, x + big, x - big], y: [y - big, y - big, y + big, y + big], lab: [-1, -1, -1, -1] }
     for (let t = 0; t < planes.length; t += 3) q = clip(q, planes[t], planes[t + 1], planes[t + 2] - g, -1)
     if (circle > 0) {
       // the bubble itself: round, flattened only where it presses against a neighbour
+      const ea = circle * Math.sqrt(asp), eb = circle / Math.sqrt(asp), ca = Math.cos(ang), sa = Math.sin(ang)
       for (let a = 0; a < CIRC; a++) {
-        const ang = (a / CIRC) * Math.PI * 2
-        const nx = Math.cos(ang), ny = Math.sin(ang)
-        q = clip(q, nx, ny, nx * x + ny * y + circle, -1)
+        const t = (a / CIRC) * Math.PI * 2
+        const nx = Math.cos(t), ny = Math.sin(t)
+        const u = nx * ca + ny * sa, v = -nx * sa + ny * ca
+        q = clip(q, nx, ny, nx * x + ny * y + Math.hypot(ea * u, eb * v), -1)
       }
     }
     return q
@@ -350,14 +362,14 @@ export function buildGeometry(p: Params): Geometry {
 
   // ---- patches (colour of the foam walls) -------------------------------------------------------
   const prng = mulberry32(p.seed * 17 + 5)
-  const PN = 260
+  const PN = 420
   const px: number[] = [], py: number[] = [], pst: number[] = [], ptone: number[] = []
   const wts = [p.wLime, p.wGreen, p.wBlue, p.wLace].map((v) => Math.max(0, v))
   for (let k = 0; k < PN; k++) {
     const x = ext.x0 - 0.1 + prng() * (ext.x1 - ext.x0 + 0.2)
     const y = ext.y0 - 0.1 + prng() * (ext.y1 - ext.y0 + 0.2)
     const dep = Math.max(0, -B(x, y)) / maxDepth
-    const ww = [wts[0] * (1.2 - 0.6 * dep), wts[1] * (1 - 0.3 * dep), wts[2] * (0.9 - 0.4 * dep), wts[3] * (0.25 + 1.3 * dep)].map((v) => Math.max(0, v))
+    const ww = [wts[0] * (1.1 - 0.2 * dep), wts[1] * (1 - 0.1 * dep), wts[2] * 0.75, wts[3] * (0.3 + 0.8 * dep)].map((v) => Math.max(0, v))
     const sum = ww.reduce((a, b) => a + b, 0)
     let st = 1
     if (sum > 0) {
@@ -397,9 +409,10 @@ export function buildGeometry(p: Params): Geometry {
     if (r > Rbig) {
       // a cavity: dark, outlined by a thin strand, fanned webs at its corners
       const hw = 0.0011
-      const q = polyOf(x, y, R, planes, hw, r * 1.22 - hw)
+      const asp = 1 + 0.9 * crng() * crng(), ang = crng() * Math.PI
+      const q = polyOf(x, y, R, planes, hw, r * 1.3 - hw, asp, ang)
       if (q.x.length < 3) continue
-      const fil = r * 0.38
+      const fil = r * (0.2 + 0.3 * crng())
       const pore = roundedCurve(q, () => [0, 0], fil)
       if (!pore) continue
       // web lines: the bubble grown step by step into the gaps between bubbles
@@ -407,18 +420,25 @@ export function buildGeometry(p: Params): Geometry {
       const grow = r * 0.45 * Math.max(0, p.webs)
       for (let f = 1; f <= FANS; f++) {
         const s = f / (FANS + 1)
-        const c = roundedCurve(polyOf(x, y, R, planes, hw * (1 - s), r * 1.22 - hw + grow * s * s), () => [0, 0], fil * (1 - s))
+        const c = roundedCurve(polyOf(x, y, R, planes, hw * (1 - s), r * 1.3 - hw + grow * s * s, asp, ang), () => [0, 0], fil * (1 - s))
         if (c) fans.push(c)
       }
       const dh = Math.hypot(x - hub[0], y - hub[1])
-      cavities.push({ pore, fans, size: Math.min(1, r / Rmax), hub: Math.exp(-(dh * dh) / (0.3 * 0.3)) })
+      cavities.push({ pore, fans, size: Math.min(1, r / Rmax) * (0.6 + 0.8 * crng()), hub: Math.exp(-(dh * dh) / (0.3 * 0.3)) })
       for (let k = 0; k < tile.x.length; k++) vertices.push(tile.x[k], tile.y[k])
       continue
     }
     // foam cell: coloured walls (relatively thicker the smaller the cell), dark hole
     foamCells++
     const pi = patchAt(x, y)
-    const st = r > Rlace && crng() < 0.35 ? 3 : pst[pi]
+    // white lace gathers around the large cavities, in some places
+    let nearCav = false
+    cellsOver(x, y, r * 3, (hk) => {
+      const l = hash.get(hk)
+      if (l) for (const m of l) if (sr[m] > Rbig && Math.hypot(sx[m] - x, sy[m] - y) < (r + sr[m]) * 1.25) nearCav = true
+    })
+    const laceHere = nearCav && noise(x * 4.1 - 17, y * 4.1 + 6) > -0.05
+    const st = laceHere || (r > Rlace && crng() < 0.3) ? 3 : pst[pi]
     const name = STYLES[st]
     const btile = polyOf(x, y, R, planes, 0, r * 1.35)
     const flatTile = new Float64Array(btile.x.length * 2)
@@ -453,32 +473,38 @@ export function buildGeometry(p: Params): Geometry {
     else if (u < 0.15) rings.push(x, y, 0.0065)
   }
 
-  // ---- edge ticks ----------------------------------------------------------------------------
-  const ticks: number[] = []
+  // ---- filaments and particles beyond the edge ------------------------------------------------
+  const ticks: number[][] = [[], [], []] // faint, mid, strong
+  const particles: number[] = []
   const trng = mulberry32(p.seed * 5 + 9)
   {
     const m = outline.length / 2
-    let acc = 0
+    let acc = 0, gap = 0.012
     for (let k = 0; k < m; k++) {
       const x = outline[2 * k], y = outline[2 * k + 1]
       const j = (k + 1) % m
       acc += Math.hypot(outline[2 * j] - x, outline[2 * j + 1] - y)
-      if (acc < 0.016) continue
+      if (acc < gap) continue
       acc = 0
-      if (noise(x * 2.6 + 30, y * 2.6) < 0.05 || trng() < 0.25) continue
+      const dens = noise(x * 2.2 + 30, y * 2.2)
+      gap = 0.006 + 0.03 * trng() * (1 - Math.max(0, dens))
       const e = 1e-3
       let gx = B(x + e, y) - B(x - e, y), gy = B(x, y + e) - B(x, y - e)
       const gl = Math.hypot(gx, gy) || 1
       gx /= gl; gy /= gl
-      const L = 0.022 + 0.06 * Math.max(0, 0.5 + 0.5 * noise(x * 7, y * 7)) * (0.6 + 0.4 * trng())
-      const s = 0.014 + trng() * 0.008
-      ticks.push(x + gx * s, y + gy * s, x + gx * (s + L), y + gy * (s + L))
+      if (trng() < 0.35) particles.push(x + gx * (0.006 + 0.03 * trng()), y + gy * (0.006 + 0.03 * trng()), 0.0012 + 0.002 * trng())
+      if (dens < -0.15 || trng() < 0.3) continue
+      const tw = (trng() - 0.5) * 0.35
+      const tx = gx * Math.cos(tw) - gy * Math.sin(tw), ty = gx * Math.sin(tw) + gy * Math.cos(tw)
+      const L = 0.01 + 0.13 * trng() ** 3 + 0.03 * Math.max(0, dens)
+      const s0 = 0.008 + trng() * 0.02
+      ticks[Math.min(2, Math.floor(trng() * 3))].push(x + tx * s0, y + ty * s0, x + tx * (s0 + L), y + ty * (s0 + L))
     }
   }
 
   return {
     flat, outline, cavities, tiles, holes, holesMid,
-    dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: Float64Array.from(ticks),
+    dots: Float64Array.from(dots), rings: Float64Array.from(rings), ticks: ticks.map((t) => Float64Array.from(t)), particles: Float64Array.from(particles),
     hub, extent: ext,
     stats: { cells: N, bubbles: foamCells, ms: Math.round(performance.now() - t0) },
   }

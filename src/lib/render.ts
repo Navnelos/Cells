@@ -90,11 +90,14 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     ops.push({ k: "discs", d: Float64Array.from(dots), fill: p.gridColor, alpha: 0.95 })
   }
 
-  if (p.ticks && g.ticks.length) ops.push({ k: "lines", s: g.ticks, stroke: p.lace, width: 0.9 * px, alpha: 0.32 })
+  if (p.ticks) {
+    ;[0.12, 0.28, 0.5].forEach((al, i) => { if (g.ticks[i].length) ops.push({ k: "lines", s: g.ticks[i], stroke: p.lace, width: 0.8 * px, alpha: al }) })
+    if (g.particles.length) ops.push({ k: "discs", d: g.particles, fill: p.lime, alpha: 0.5 })
+  }
 
   // ---- the shape ---------------------------------------------------------------------------
   ops.push({ k: "clipPoly", p: g.outline })
-  ops.push({ k: "poly", p: g.outline, fill: mix(p.bg, p.green, 0.05) })
+  ops.push({ k: "poly", p: g.outline, fill: mix(p.bg, p.green, 0.025) })
   if (p.glow > 0) ops.push({ k: "radial", x: g.hub[0], y: g.hub[1], r: 0.45, color: p.hub, alpha: 0.35 * p.glow })
 
   // fanned junction webs of the cavities
@@ -102,6 +105,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
     const t = Math.min(1, p.glow * c.hub)
     ops.push({ k: "curves", c: c.fans, stroke: mix(p.strand, p.hub, t), width: 0.42 * px, alpha: Math.min(0.85, 0.22 + 0.4 * t) })
   }
+  ops.push({ k: "unclip" }) // the foam itself forms the edge
 
   // foam: coloured walls, dark holes; white lace is white walls with dark holes
   const colors: Record<(typeof STYLES)[number], string> = { lime: p.lime, green: p.green, blue: p.blue, lace: p.lace }
@@ -124,7 +128,7 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
   for (const c of g.cavities) {
     const t = Math.min(1, p.glow * c.hub)
     const col = mix(p.strand, p.hub, t)
-    const w = p.strandWidth * (0.55 + 0.6 * Math.sqrt(c.size)) * (1 + 0.6 * t)
+    const w = p.strandWidth * (0.4 + 0.8 * Math.sqrt(c.size)) * (1 + 0.6 * t)
     ops.push({ k: "curves", c: [c.pore], stroke: col, width: w * 3.2 * px, alpha: 0.07 + 0.12 * t })
     ops.push({ k: "curves", c: [c.pore], stroke: col, width: w * px, alpha: 0.95 })
   }
@@ -136,7 +140,6 @@ export function buildOps(g: Geometry, p: Params, frame: FrameBox, transparent: b
       ops.push({ k: "discs", d: scaleR(g.rings, 0.32), fill: p.lace })
     }
   }
-  ops.push({ k: "unclip" }) // outline
   ops.push({ k: "unclip" }) // frame
   return ops
 }
