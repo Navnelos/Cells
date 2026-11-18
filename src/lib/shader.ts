@@ -96,6 +96,56 @@ vec4 micro(vec2 p, float scale) {
   return vec4(w, hash1(c1 * 1.31), c1 * scale);
 }
 
+vec3 foamColor(vec2 p, float depth, float d12, float d13, bool cav1, bool cav2) {
+  float aa = uDevPx;
+  vec3 shape;
+    float sc = uFoamScale * (vnoise(p * 2.6 + 40.0) > 0.1 ? 1.0 : 0.62); // two scales, clusters of each
+  vec4 m = micro(p, sc);
+  vec2 cp = m.zw;
+  // colour field, sampled once per micro-cell so cells are coloured as units
+  float f1 = fbm(cp * 5.5 + 11.0), f2 = fbm(cp * 6.5 - 23.0), f3 = fbm(cp * 7.0 + 61.0);
+  float rel = clamp(depth / 0.35, 0.0, 1.0);
+  vec4 wts = uMix * vec4(1.0 + 1.2 * f1, 1.0 - f1 + 0.6 * f2, -0.4 + 4.0 * f3, 0.2 + rel * 1.0 + 1.2 * f2);
+  wts = max(wts, 0.0);
+  int st = 0;
+  float best = wts.x;
+  if (wts.y > best) { st = 1; best = wts.y; }
+  if (wts.z > best) { st = 2; best = wts.z; }
+  if (wts.w > best) { st = 3; best = wts.w; }
+  // cells beside a cavity tend to be lace
+  if ((!cav1 || cav2) && min(d12, d13) < 0.03 && fbm(cp * 5.0 + 3.0) > 0.15) st = 3;
+  if (f3 > 0.42 && uMix.z > 0.0) st = 2;
+
+  float tone = m.y;
+  vec3 wall, hole;
+  float openP, halfW;
+  if (st == 0) {
+    wall = tone < 0.3 ? mix(cLime, cGreen, 0.4) : cLime;
+    hole = mix(cLime, cBg, 0.7); openP = 0.35 * uOpen; halfW = 0.05;
+  } else if (st == 1) {
+    wall = tone < 0.4 ? mix(cGreen, cBg, 0.2) : cGreen;
+    hole = mix(cGreen, cBg, 0.86); openP = uOpen; halfW = 0.05;
+  } else if (st == 2) {
+    wall = cBlue; hole = mix(cBlue, cBg, 0.8); openP = 0.7 * uOpen; halfW = 0.05;
+  } else {
+    wall = cLace; hole = cBg; openP = 1.0; halfW = 0.02;
+  }
+  if (st == 3) {
+    // white lace: fine round outlines of mixed size on dark
+    float lsc = sc * (fbm(cp * 6.0) > 0.0 ? 1.9 : 1.3);
+    vec4 lm = micro(p + 0.37, lsc);
+    float ring = 1.0 - smoothstep(0.0, aa * 1.2, abs(lm.x - 0.06 * lsc));
+    float body = smoothstep(-aa, aa, lm.x - 0.06 * lsc);
+    shape = uFlat > 0.5 ? mix(cGreen, cBg, 0.55) : mix(mix(cLace, cBg, 0.82), cBg, body);
+    shape = mix(shape, cLace, ring * 0.9 * (1.0 - uFlat));
+  } else {
+    float isOpen = step(m.y * 0.999 + 0.0005, openP) * (1.0 - uFlat);
+    float holeMask = smoothstep(-aa, aa, m.x - halfW * sc);
+    shape = mix(wall, hole, isOpen * holeMask);
+  }
+  return shape;
+}
+
 void main() {
   vec2 fc = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
   // outside the frame
@@ -147,7 +197,7 @@ void main() {
   float de = depth - band;
 
   float hw = 0.5 * uStrand * uPx;
-  float k = s1.z * 0.55 * max(0.05, uWebs);
+  float k = s1.z * 0.38 * max(0.05, uWebs);
   float raw = min(min(d12, d13), de);
   float w = smin(smin(d12, d13, k), de, k);
 
@@ -158,68 +208,32 @@ void main() {
   bool cav2 = s2.w < 0.5;
   bool cav3 = s3.w < 0.5;
 
+  // every boundary below is a smooth, antialiased blend
+  float cm = smoothstep(hw - aa, hw + aa, w);        // 1 = inside a cavity
+  bool cavJunction = cav1 && cav2 && (cav3 || d13 > d12 * 3.0) && de > 0.0;
   vec3 shape;
-  if (cav1 && w > hw) {
-    // cavity interior
+  if (cav1 && cm >= 1.0) {
     shape = cBg;
-  } else if (cav1 && raw > hw && cav2 && (cav3 || d13 > d12 * 3.0) && de > 0.0) {
-    // junction between cavities: one membrane spreading into a soft concave web
+  } else if (cavJunction) {
+    // one membrane: bright where cells touch, fading into a soft concave web at junctions
     float t = clamp((hw - w) / (k * 0.25 + hw), 0.0, 1.0);
-    vec3 webMid = mix(cBg, mix(cStrand, cHub, hubT), 0.16 + 0.22 * hubT);
-    shape = mix(strandCol, webMid, smoothstep(0.0, 0.45, t));
-  } else if (cav1 && raw <= hw && (cav2 || de < hw)) {
-    // the strand itself (between cavities, or a cavity reaching the edge band)
-    shape = strandCol;
+    vec3 webMid = mix(cBg, mix(cStrand, cHub, hubT), 0.22 + 0.25 * hubT);
+    vec3 web = mix(strandCol, webMid, smoothstep(0.15, 1.0, t));
+    shape = mix(web, cBg, cm);
   } else {
-    // ---- foam: micro partition coloured by spatial colour fields ----
-    float sc = uFoamScale * (vnoise(p * 2.6 + 40.0) > 0.1 ? 1.0 : 0.62); // two scales, clusters of each
-    vec4 m = micro(p, sc);
-    vec2 cp = m.zw;
-    // colour field, sampled once per micro-cell so cells are coloured as units
-    float f1 = fbm(cp * 5.5 + 11.0), f2 = fbm(cp * 6.5 - 23.0), f3 = fbm(cp * 7.0 + 61.0);
-    float rel = clamp(depth / 0.35, 0.0, 1.0);
-    vec4 wts = uMix * vec4(1.0 + 1.2 * f1, 1.0 - f1 + 0.6 * f2, -0.4 + 4.0 * f3, 0.2 + rel * 1.0 + 1.2 * f2);
-    wts = max(wts, 0.0);
-    int st = 0;
-    float best = wts.x;
-    if (wts.y > best) { st = 1; best = wts.y; }
-    if (wts.z > best) { st = 2; best = wts.z; }
-    if (wts.w > best) { st = 3; best = wts.w; }
-    // cells beside a cavity tend to be lace
-    if ((!cav1 || cav2) && min(d12, d13) < 0.03 && fbm(cp * 5.0 + 3.0) > 0.15) st = 3;
-    if (f3 > 0.42 && uMix.z > 0.0) st = 2;
-
-    float tone = m.y;
-    vec3 wall, hole;
-    float openP, halfW;
-    if (st == 0) {
-      wall = tone < 0.3 ? mix(cLime, cGreen, 0.4) : cLime;
-      hole = mix(cLime, cBg, 0.7); openP = 0.35 * uOpen; halfW = 0.05;
-    } else if (st == 1) {
-      wall = tone < 0.4 ? mix(cGreen, cBg, 0.2) : cGreen;
-      hole = mix(cGreen, cBg, 0.86); openP = uOpen; halfW = 0.05;
-    } else if (st == 2) {
-      wall = cBlue; hole = mix(cBlue, cBg, 0.8); openP = 0.7 * uOpen; halfW = 0.05;
+    vec3 foam = foamColor(p, depth, d12, d13, cav1, cav2);
+    if (cav1) {
+      shape = mix(foam, cBg, cm);
+      // the cavity's own thin membrane, antialiased along its rim
+      float ring = 1.0 - smoothstep(hw * 0.5, hw * 0.5 + aa * 1.2, abs(w - hw));
+      shape = mix(shape, strandCol, ring);
     } else {
-      wall = cLace; hole = cBg; openP = 1.0; halfW = 0.02;
+      shape = foam;
+      if (cav2) {
+        float line = 1.0 - smoothstep(hw - aa, hw + aa, d12);
+        shape = mix(shape, strandCol, line);
+      }
     }
-    if (st == 3) {
-      // white lace: fine round outlines of mixed size on dark
-      float lsc = sc * (fbm(cp * 6.0) > 0.0 ? 1.9 : 1.3);
-      vec4 lm = micro(p + 0.37, lsc);
-      float ring = 1.0 - smoothstep(0.0, aa * 1.2, abs(lm.x - 0.06 * lsc));
-      float body = smoothstep(-aa, aa, lm.x - 0.06 * lsc);
-      shape = uFlat > 0.5 ? mix(cGreen, cBg, 0.55) : mix(mix(cLace, cBg, 0.82), cBg, body);
-      shape = mix(shape, cLace, ring * 0.9 * (1.0 - uFlat));
-    } else {
-      float isOpen = step(m.y * 0.999 + 0.0005, openP) * (1.0 - uFlat);
-      float holeMask = smoothstep(-aa, aa, m.x - halfW * sc);
-      shape = mix(wall, hole, isOpen * holeMask);
-    }
-    // the edge is formed by the bubbles: bubbles whose centre lies outside are cut away
-    if (depth < 2.5 * sc && shapeSDF(cp) > -0.15 * sc) inside = 0.0;
-    // a cavity's strand still shows where foam presses against it
-    if (cav2 && !cav1 && abs(d12) < hw * 1.2) shape = mix(shape, strandCol, 0.9);
   }
   col = mix(col, shape, inside);
   outColor = vec4(col, max(alpha, inside));
