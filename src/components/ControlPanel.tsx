@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { Dices, ImageDown, Undo2 } from "lucide-react"
+import { Dices, ImageDown, Save, Trash2, Undo2, X } from "lucide-react"
 import { toast } from "sonner"
 
 import { ColorField, Section, SegmentField, SelectField, SliderField, SwitchField } from "@/components/fields"
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type { Engine } from "@/lib/engine"
 import { DEFAULTS, DEFAULT_LOBES, type Aspect, type FillMode, type Params } from "@/lib/params"
+import { loadSaved, storeSaved, type SavedPreset } from "@/lib/recipe"
 import { randomSeed } from "@/lib/rng"
 
 function download(data: Blob, name: string) {
@@ -33,6 +34,25 @@ export function ControlPanel({
   engine: Engine | null
 }) {
   const [busy, setBusy] = useState(false)
+  const [saved, setSaved] = useState<SavedPreset[]>(() => loadSaved())
+  const [saving, setSaving] = useState(false)
+  const [presetName, setPresetName] = useState("")
+
+  const savePreset = () => {
+    const name = presetName.trim() || `Cells ${p.seed}`
+    const next = [{ name, params: { ...p }, at: Date.now() }, ...saved.filter((s) => s.name !== name)]
+    setSaved(next)
+    storeSaved(next)
+    setPresetName("")
+    setSaving(false)
+    toast.success(`Saved preset “${name}”`)
+  }
+
+  const removePreset = (name: string) => {
+    const next = saved.filter((s) => s.name !== name)
+    setSaved(next)
+    storeSaved(next)
+  }
   const foam = p.fill === "foam"
 
   const exportFile = async (kind: "png" | "jpg") => {
@@ -55,10 +75,44 @@ export function ControlPanel({
       <header className="space-y-3 border-b px-4 py-4">
         <div className="flex items-center justify-between">
           <h1 className="text-base font-semibold tracking-tight">Cells</h1>
-          <Button size="sm" variant="outline" onClick={() => { replace({ ...DEFAULTS }); toast("Reset") }} title="Back to the default (⌘Z undoes)">
-            <Undo2 /> Reset
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setSaving((v) => !v)} aria-expanded={saving} title="Save the current settings as a preset">
+              <Save /> Save preset
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => { replace({ ...DEFAULTS }); toast("Reset") }} title="Back to the default (⌘Z undoes)">
+              <Undo2 /> Reset
+            </Button>
+          </div>
         </div>
+        {saving && (
+          <div className="flex gap-2">
+            <Input
+              autoFocus
+              value={presetName}
+              onChange={(e) => setPresetName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") savePreset(); if (e.key === "Escape") setSaving(false) }}
+              placeholder={`Cells ${p.seed}`}
+              className="h-8 text-sm"
+              aria-label="Preset name"
+            />
+            <Button size="sm" onClick={savePreset}>Save</Button>
+            <Button size="sm" variant="ghost" onClick={() => setSaving(false)} aria-label="Cancel"><X /></Button>
+          </div>
+        )}
+        {saved.length > 0 && (
+          <ul className="max-h-36 divide-y overflow-y-auto rounded-md border">
+            {saved.map((s) => (
+              <li key={s.name} className="flex items-center gap-1 py-1 pr-1 pl-3">
+                <button className="flex-1 truncate text-left text-sm hover:underline" onClick={() => { replace({ ...DEFAULTS, ...s.params }); toast(`Loaded “${s.name}”`) }}>
+                  {s.name}
+                </button>
+                <Button size="icon" variant="ghost" className="size-7" onClick={() => removePreset(s.name)} aria-label={`Delete ${s.name}`}>
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
         <div className="flex items-center gap-2">
           <Label className="text-[13px] font-normal text-muted-foreground">Seed</Label>
           <Input

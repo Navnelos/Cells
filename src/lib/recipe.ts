@@ -19,3 +19,26 @@ export function loadLast(): Params {
 export function storeLast(p: Params) {
   try { localStorage.setItem(LAST, JSON.stringify(p)) } catch { /* ignore */ }
 }
+
+// ---- saved presets (kept in this browser) ---------------------------------------------------
+
+const SAVED = "cells:v2:saved"
+
+export interface SavedPreset {
+  name: string
+  params: Params
+  at: number
+}
+
+export function loadSaved(): SavedPreset[] {
+  try {
+    const list = JSON.parse(localStorage.getItem(SAVED) ?? "[]")
+    return Array.isArray(list) ? list.filter((s) => s && typeof s.name === "string" && s.params) : []
+  } catch {
+    return []
+  }
+}
+
+export function storeSaved(list: SavedPreset[]) {
+  try { localStorage.setItem(SAVED, JSON.stringify(list)) } catch { /* ignore */ }
+}
