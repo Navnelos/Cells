@@ -193,7 +193,7 @@ void main() {
 
   float depth = -B;
   // foam band along the edge: its width wanders, nearly vanishing in places
-  float band = uBand * max(0.0, 0.2 + 1.3 * fbm(p * 2.4 + 5.0));
+  float band = uBand; // the structure decides where foam meets the edge
   float de = depth - band;
 
   float hw = 0.5 * uStrand * uPx;
@@ -214,6 +214,9 @@ void main() {
   vec3 shape;
   if (cav1 && cm >= 1.0) {
     shape = cBg;
+  } else if (cav1 && de < hw) {
+    // a cavity reaching the outline: its membrane is the edge
+    shape = mix(strandCol, cBg, cm);
   } else if (cavJunction) {
     // one membrane: bright where cells touch, fading into a soft concave web at junctions
     float t = clamp((hw - w) / (k * 0.25 + hw), 0.0, 1.0);

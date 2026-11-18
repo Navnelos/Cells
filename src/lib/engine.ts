@@ -118,7 +118,7 @@ export class Renderer {
     gl.uniform1f(this.u("uOpen"), p.holes)
     gl.uniform4f(this.u("uMix"), p.wLime, p.wGreen, p.wBlue, p.wLace)
     gl.uniform1f(this.u("uFlat"), p.fill === "flat" ? 1 : 0)
-    gl.uniform1f(this.u("uBand"), 0.012 + 0.08 * Math.max(0, p.foamAmount))
+    gl.uniform1f(this.u("uBand"), 0.0035)
     gl.uniform1f(this.u("uGrid"), p.grid ? 1 : 0)
     gl.uniform1f(this.u("uTransparent"), transparent ? 1 : 0)
     const colors: [string, string][] = [["cBg", p.bg], ["cStrand", p.strand], ["cHub", p.hub], ["cLime", p.lime], ["cGreen", p.green], ["cBlue", p.blue], ["cLace", p.lace], ["cGrid", p.gridColor]]

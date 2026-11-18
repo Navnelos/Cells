@@ -76,9 +76,11 @@ export function buildStructure(p: Params): Structure {
   maxDepth = maxDepth || 0.5
 
   // density field: 0 = calm (cavities), 1 = intricate (foam)
-  const band = (x: number, y: number) => 0.06 + 0.8 * Math.max(0, p.foamAmount) * Math.max(0.1, 1 + 1.3 * fbm(noise, x * 2.2 + 5, y * 2.2 - 2, 2))
+  // foam along the edge only in stretches; elsewhere a cavity's membrane is the edge itself
+  const band = (x: number, y: number) => 1.1 * Math.max(0, p.foamAmount) * Math.max(0, -0.18 + 1.7 * fbm(noise, x * 2.2 + 5, y * 2.2 - 2, 2))
   const density = (x: number, y: number, depth: number) => {
-    const edge = 1 - smooth(0, band(x, y), depth / maxDepth)
+    const bw = band(x, y)
+    const edge = bw > 0.01 ? 1 - smooth(0, bw, depth / maxDepth) : 0
     const islands = Math.min(1, Math.max(0, p.spacing) * 1.8 * smooth(0.05, 0.45, noise(x * 2.9 + 9, y * 2.9 - 4)))
     return Math.min(1, Math.max(edge, islands))
   }
