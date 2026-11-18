@@ -173,7 +173,7 @@ export function buildStructure(p: Params): Structure {
       let gx = B(x + e, y) - B(x - e, y), gy = B(x, y + e) - B(x, y - e)
       const gl = Math.hypot(gx, gy) || 1
       gx /= gl; gy /= gl
-      const L = 0.012 + 0.05 * trng() ** 2 + 0.025 * Math.max(0, dens)
+      const L = 0.006 + 0.028 * trng() ** 2 + 0.012 * Math.max(0, dens)
       const s0 = 0.01 + trng() * 0.012
       ticks[Math.min(2, Math.floor(trng() * 3))].push(x + gx * s0, y + gy * s0, x + gx * (s0 + L), y + gy * (s0 + L))
     }

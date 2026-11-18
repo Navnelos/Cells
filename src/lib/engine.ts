@@ -114,11 +114,11 @@ export class Renderer {
     gl.uniform1f(this.u("uStrand"), p.strandWidth)
     gl.uniform1f(this.u("uWebs"), p.webs)
     gl.uniform1f(this.u("uGlow"), p.glow)
-    gl.uniform1f(this.u("uFoamScale"), 0.018 * Math.max(0.2, p.bubbleSize))
+    gl.uniform1f(this.u("uFoamScale"), 0.014 * Math.max(0.2, p.bubbleSize))
     gl.uniform1f(this.u("uOpen"), p.holes)
     gl.uniform4f(this.u("uMix"), p.wLime, p.wGreen, p.wBlue, p.wLace)
     gl.uniform1f(this.u("uFlat"), p.fill === "flat" ? 1 : 0)
-    gl.uniform1f(this.u("uBand"), 0.03 + 0.12 * Math.max(0, p.foamAmount))
+    gl.uniform1f(this.u("uBand"), 0.012 + 0.08 * Math.max(0, p.foamAmount))
     gl.uniform1f(this.u("uGrid"), p.grid ? 1 : 0)
     gl.uniform1f(this.u("uTransparent"), transparent ? 1 : 0)
     const colors: [string, string][] = [["cBg", p.bg], ["cStrand", p.strand], ["cHub", p.hub], ["cLime", p.lime], ["cGreen", p.green], ["cBlue", p.blue], ["cLace", p.lace], ["cGrid", p.gridColor]]
@@ -141,12 +141,12 @@ export function paintOverlay(ctx: CanvasRenderingContext2D, p: Params, s: Struct
   ctx.setTransform(v.unit, 0, 0, v.unit, v.ox, v.oy)
   ctx.lineCap = "round"
   if (p.ticks) {
-    ;[0.14, 0.3, 0.5].forEach((al, i) => {
+    ;[0.07, 0.14, 0.24].forEach((al, i) => {
       const t = s.ticks[i]
       if (!t.length) return
       ctx.globalAlpha = al
       ctx.strokeStyle = p.lace
-      ctx.lineWidth = (0.8 * px) / v.unit
+      ctx.lineWidth = (0.6 * px) / v.unit
       ctx.beginPath()
       for (let k = 0; k < t.length; k += 4) { ctx.moveTo(t[k], t[k + 1]); ctx.lineTo(t[k + 2], t[k + 3]) }
       ctx.stroke()

@@ -71,24 +71,28 @@ float shapeSDF(vec2 p) {
 
 vec4 seedAt(int i) { return texelFetch(uSeeds, ivec2(i, 0), 0); }
 
-// micro partition: three nearest jittered points of a grid, with rounded holes
-// returns: x = rounded wall distance (plate units), y = cell id hash, zw = cell point
+// micro foam: round bubbles of varied diameter on a jittered grid; neighbours press each
+// other flat along their power bisector, everything else stays round.
+// returns: x = distance into the bubble (plate units, >0 inside), y = id hash, zw = centre
 vec4 micro(vec2 p, float scale) {
   vec2 q = p / scale;
   vec2 ip = floor(q);
-  float d1 = 1e9, d2 = 1e9, d3 = 1e9;
-  vec2 c1 = vec2(0), c2 = vec2(0), c3 = vec2(0);
+  float b1 = 1e9, b2 = 1e9;
+  vec2 c1 = vec2(0), c2 = vec2(0);
+  float r1 = 0.5;
   for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
     vec2 g = ip + vec2(i, j);
-    vec2 c = g + 0.15 + 0.7 * hash2(g);
-    float d = dot(q - c, q - c);
-    if (d < d1) { d3 = d2; c3 = c2; d2 = d1; c2 = c1; d1 = d; c1 = c; }
-    else if (d < d2) { d3 = d2; c3 = c2; d2 = d; c2 = c; }
-    else if (d < d3) { d3 = d; c3 = c; }
+    vec2 h = hash2(g);
+    vec2 c = g + 0.1 + 0.8 * h;
+    float hr = hash1(g + 7.7);
+    float r = 0.42 + 0.42 * hr * hr + (hr > 0.93 ? 0.55 : 0.0);
+    float pd = dot(q - c, q - c) - r * r;
+    if (pd < b1) { b2 = b1; c2 = c1; b1 = pd; c1 = c; r1 = r; }
+    else if (pd < b2) { b2 = pd; c2 = c; }
   }
-  float b12 = dot(q - 0.5 * (c1 + c2), normalize(c1 - c2));
-  float b13 = dot(q - 0.5 * (c1 + c3), normalize(c1 - c3));
-  float w = smin(b12, b13, 0.22) * scale;
+  float inside = r1 - length(q - c1);
+  float bis = (b2 - b1) / (2.0 * max(1e-4, length(c2 - c1)));
+  float w = smin(inside, bis, 0.3) * scale;
   return vec4(w, hash1(c1 * 1.31), c1 * scale);
 }
 
@@ -121,12 +125,13 @@ void main() {
   if (inside <= 0.0) { outColor = vec4(col, alpha); return; }
 
   // ---- nearest three seeds in power distance ----
+  vec2 pw = p + 0.028 * vec2(fbm(p * 2.7 + 1.3), fbm(p * 2.7 + 7.9));
   float pd1 = 1e9, pd2 = 1e9, pd3 = 1e9;
   int i1 = 0, i2 = 0, i3 = 0;
   for (int i = 0; i < 640; i++) {
     if (i >= uCount) break;
     vec4 s = seedAt(i);
-    vec2 d = p - s.xy;
+    vec2 d = pw - s.xy;
     float pd = dot(d, d) - s.z * s.z;
     if (pd < pd1) { pd3 = pd2; i3 = i2; pd2 = pd1; i2 = i1; pd1 = pd; i1 = i; }
     else if (pd < pd2) { pd3 = pd2; i3 = i2; pd2 = pd; i2 = i; }
@@ -138,7 +143,7 @@ void main() {
 
   float depth = -B;
   // foam band along the edge: its width wanders, nearly vanishing in places
-  float band = uBand * max(0.0, 0.35 + 1.1 * fbm(p * 2.4 + 5.0));
+  float band = uBand * max(0.0, 0.2 + 1.3 * fbm(p * 2.4 + 5.0));
   float de = depth - band;
 
   float hw = 0.5 * uStrand * uPx;
@@ -158,14 +163,10 @@ void main() {
     // cavity interior
     shape = cBg;
   } else if (cav1 && raw > hw && cav2 && (cav3 || d13 > d12 * 3.0) && de > 0.0) {
-    // junction between cavities: fan lines (iso-lines of the rounded field)
-    float t = (hw - w) / (k * 0.25 + hw);
-    float n = 7.0 + 5.0 * hubT;
-    float f = abs(fract(t * n) - 0.5) * 2.0;
-    float lineW = clamp(aa / ((k * 0.25 + hw) / n) * 1.6, 0.05, 1.0);
-    float l = 1.0 - smoothstep(1.0 - lineW, 1.0, f);
-    vec3 webBase = mix(cBg, cStrand, 0.12 + 0.2 * hubT);
-    shape = mix(webBase, strandCol, l * (0.45 + 0.4 * hubT));
+    // junction between cavities: one membrane spreading into a soft concave web
+    float t = clamp((hw - w) / (k * 0.25 + hw), 0.0, 1.0);
+    vec3 webMid = mix(cBg, mix(cStrand, cHub, hubT), 0.16 + 0.22 * hubT);
+    shape = mix(strandCol, webMid, smoothstep(0.0, 0.45, t));
   } else if (cav1 && raw <= hw && (cav2 || de < hw)) {
     // the strand itself (between cavities, or a cavity reaching the edge band)
     shape = strandCol;
@@ -175,7 +176,7 @@ void main() {
     vec4 m = micro(p, sc);
     vec2 cp = m.zw;
     // colour field, sampled once per micro-cell so cells are coloured as units
-    float f1 = fbm(cp * 3.2 + 11.0), f2 = fbm(cp * 4.3 - 23.0), f3 = fbm(cp * 2.7 + 61.0);
+    float f1 = fbm(cp * 5.5 + 11.0), f2 = fbm(cp * 6.5 - 23.0), f3 = fbm(cp * 7.0 + 61.0);
     float rel = clamp(depth / 0.35, 0.0, 1.0);
     vec4 wts = uMix * vec4(1.0 + 1.2 * f1, 1.0 - f1 + 0.6 * f2, -0.4 + 4.0 * f3, 0.2 + rel * 1.0 + 1.2 * f2);
     wts = max(wts, 0.0);
@@ -186,33 +187,37 @@ void main() {
     if (wts.w > best) { st = 3; best = wts.w; }
     // cells beside a cavity tend to be lace
     if ((!cav1 || cav2) && min(d12, d13) < 0.03 && fbm(cp * 5.0 + 3.0) > 0.15) st = 3;
-    if (f3 > 0.36 && uMix.z > 0.0) st = 2;
+    if (f3 > 0.42 && uMix.z > 0.0) st = 2;
 
     float tone = m.y;
-    vec3 wall;
-    vec3 hole;
-    float openP;
-    float wallW;
+    vec3 wall, hole;
+    float openP, halfW;
     if (st == 0) {
-      wall = tone < 0.33 ? mix(cLime, cGreen, 0.45) : tone < 0.7 ? cLime : mix(cLime, vec3(0.98, 0.97, 0.3), 0.15);
-      hole = mix(cLime, cBg, 0.72); openP = 0.3 * uOpen; wallW = 0.22;
+      wall = tone < 0.3 ? mix(cLime, cGreen, 0.4) : cLime;
+      hole = mix(cLime, cBg, 0.7); openP = 0.35 * uOpen; halfW = 0.05;
     } else if (st == 1) {
-      wall = tone < 0.4 ? mix(cGreen, cBg, 0.25) : cGreen;
-      hole = mix(cGreen, cBg, 0.86); openP = uOpen; wallW = 0.16;
+      wall = tone < 0.4 ? mix(cGreen, cBg, 0.2) : cGreen;
+      hole = mix(cGreen, cBg, 0.86); openP = uOpen; halfW = 0.05;
     } else if (st == 2) {
-      wall = cBlue; hole = mix(cBlue, cBg, 0.75); openP = 0.6 * uOpen; wallW = 0.18;
+      wall = cBlue; hole = mix(cBlue, cBg, 0.8); openP = 0.7 * uOpen; halfW = 0.05;
     } else {
-      wall = mix(cLace, cBg, 0.12); hole = cBg; openP = 1.0; wallW = 0.022;
+      wall = cLace; hole = cBg; openP = 1.0; halfW = 0.02;
     }
     if (st == 3) {
-      float lsc = sc * (fbm(cp * 6.0) > 0.0 ? 2.2 : 1.4);
-      m = micro(p + 0.37, lsc);
-      sc = lsc;
+      // white lace: fine round outlines of mixed size on dark
+      float lsc = sc * (fbm(cp * 6.0) > 0.0 ? 1.9 : 1.3);
+      vec4 lm = micro(p + 0.37, lsc);
+      float ring = 1.0 - smoothstep(0.0, aa * 1.2, abs(lm.x - 0.06 * lsc));
+      float body = smoothstep(-aa, aa, lm.x - 0.06 * lsc);
+      shape = uFlat > 0.5 ? mix(cGreen, cBg, 0.55) : mix(mix(cLace, cBg, 0.82), cBg, body);
+      shape = mix(shape, cLace, ring * 0.9 * (1.0 - uFlat));
+    } else {
+      float isOpen = step(m.y * 0.999 + 0.0005, openP) * (1.0 - uFlat);
+      float holeMask = smoothstep(-aa, aa, m.x - halfW * sc);
+      shape = mix(wall, hole, isOpen * holeMask);
     }
-    float isOpen = step(m.y * 0.999 + 0.0005, openP) * (1.0 - uFlat);
-    float holeMask = smoothstep(wallW * sc - aa, wallW * sc + aa, m.x);
-    shape = mix(wall, hole, isOpen * holeMask);
-    if (st == 3 && uFlat < 0.5) shape = mix(mix(cGreen, cBg, 0.6), shape, 1.0);
+    // the edge is formed by the bubbles: bubbles whose centre lies outside are cut away
+    if (depth < 2.5 * sc && shapeSDF(cp) > -0.15 * sc) inside = 0.0;
     // a cavity's strand still shows where foam presses against it
     if (cav2 && !cav1 && abs(d12) < hw * 1.2) shape = mix(shape, strandCol, 0.9);
   }
